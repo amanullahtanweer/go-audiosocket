@@ -1,0 +1,9 @@
+Session ID: ba90d9ab-5249-4638-8a91-1fcef906d3ee
+Provider: assemblyai
+Start Time: 2025-08-27 22:36:48
+Duration: 38.41953825s
+Sample Rate: 8000Hz
+
+---TRANSCRIPT---
+
+Hello. Anyone. Do. Hello? Anyone there? Hello.

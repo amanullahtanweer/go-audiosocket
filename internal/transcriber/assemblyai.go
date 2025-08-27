@@ -78,7 +78,7 @@ func NewAssemblyAITranscriber(apiKey string, sampleRate int) (*AssemblyAITranscr
 	go at.handleResults()
 
 	// Start audio sender goroutine
-	// This will send buffered audio every 100ms (well within AssemblyAI's 50-1000ms range)
+	// This will send buffered audio every 50ms to reduce latency
 	at.wg.Add(1)
 	go at.audioSender()
 
@@ -90,8 +90,8 @@ func NewAssemblyAITranscriber(apiKey string, sampleRate int) (*AssemblyAITranscr
 func (at *AssemblyAITranscriber) audioSender() {
 	defer at.wg.Done()
 
-	// Send audio every 100ms (a good balance between latency and efficiency)
-	ticker := time.NewTicker(100 * time.Millisecond)
+	// Send audio every 50ms to minimize latency while respecting AssemblyAI limits
+	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -110,21 +110,42 @@ func (at *AssemblyAITranscriber) sendBufferedAudio() {
 	at.bufferMu.Lock()
 	defer at.bufferMu.Unlock()
 
-	// Only send if we have audio to send
-	if len(at.audioBuffer) == 0 {
+	// Calculate chunk size limits based on AssemblyAI requirements
+	// At 16kHz, 16-bit audio (2 bytes per sample):
+	// Min 50ms = 0.05 * 16000 * 2 = 1600 bytes
+	// Max 950ms = 0.95 * 16000 * 2 = 30400 bytes (staying under 1000ms limit)
+	const minChunkSize = 1600
+	const maxChunkSize = 30400
+	
+	// Only send if we have at least the minimum chunk size
+	// This prevents sending chunks that are too small
+	if len(at.audioBuffer) < minChunkSize {
 		return
 	}
-
-	// Send the buffered audio
-	if err := at.conn.WriteMessage(websocket.BinaryMessage, at.audioBuffer); err != nil {
-		if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-			log.Printf("Failed to send audio to AssemblyAI: %v", err)
+	
+	// Send audio in chunks that respect AssemblyAI's duration limits
+	for len(at.audioBuffer) >= minChunkSize {
+		chunkSize := len(at.audioBuffer)
+		if chunkSize > maxChunkSize {
+			chunkSize = maxChunkSize
 		}
-		return
+		
+		// Extract chunk to send
+		chunk := at.audioBuffer[:chunkSize]
+		
+		// Send the chunk
+		if err := at.conn.WriteMessage(websocket.BinaryMessage, chunk); err != nil {
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				log.Printf("Failed to send audio to AssemblyAI: %v", err)
+			}
+			// Clear buffer on error to avoid infinite loop
+			at.audioBuffer = at.audioBuffer[:0]
+			return
+		}
+		
+		// Remove sent chunk from buffer
+		at.audioBuffer = at.audioBuffer[chunkSize:]
 	}
-
-	// Clear the buffer
-	at.audioBuffer = at.audioBuffer[:0]
 }
 
 func (at *AssemblyAITranscriber) ProcessAudio(audioData []byte) error {
@@ -137,8 +158,7 @@ func (at *AssemblyAITranscriber) ProcessAudio(audioData []byte) error {
 		processedData = at.resample8to16(audioData)
 	}
 
-	// Add to buffer instead of sending immediately
-	// The audioSender goroutine will send it in appropriate chunks
+	// Add to buffer
 	at.audioBuffer = append(at.audioBuffer, processedData...)
 
 	return nil
@@ -252,6 +272,15 @@ func (at *AssemblyAITranscriber) Close() error {
 	// Stop the audio sender
 	close(at.stopSending)
 	at.wg.Wait()
+
+	// Send any remaining audio in buffer (even if less than minimum)
+	at.bufferMu.Lock()
+	if len(at.audioBuffer) > 0 {
+		// Try to send remaining audio, but don't fail close if it errors
+		_ = at.conn.WriteMessage(websocket.BinaryMessage, at.audioBuffer)
+		at.audioBuffer = at.audioBuffer[:0]
+	}
+	at.bufferMu.Unlock()
 
 	// Send termination message to AssemblyAI
 	terminateMsg := AssemblyAIMessage{
