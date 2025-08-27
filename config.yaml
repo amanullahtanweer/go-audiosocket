@@ -7,5 +7,11 @@ vosk:
   sample_rate: 8000
 
 transcription:
+  provider: "assemblyai"
   output_dir: "./transcripts"
   save_transcripts: true
+  save_audio: true
+
+assemblyai:
+  api_key: "590fa22d4e11403fa681db14eac44042"
+  sample_rate: 8000

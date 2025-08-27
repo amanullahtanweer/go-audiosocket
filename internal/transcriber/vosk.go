@@ -1,13 +1,13 @@
 package transcriber
 
 import (
-    "encoding/json"
-    "fmt"
-    "log"
-    "strings"
-    "sync"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+	"sync"
 
-    "github.com/gorilla/websocket"
+	"github.com/gorilla/websocket"
 )
 
 type VoskTranscriber struct {
@@ -16,11 +16,6 @@ type VoskTranscriber struct {
     fullText     strings.Builder
     mu           sync.Mutex
     sampleRate   int
-}
-
-type TranscriptionResult struct {
-    Text    string
-    IsFinal bool
 }
 
 type VoskResult struct {
@@ -36,7 +31,7 @@ type VoskResult struct {
 
 func NewVoskTranscriber(serverURL string, sampleRate int) (*VoskTranscriber, error) {
     // Connect to Vosk server WebSocket
-    url := fmt.Sprintf("%s/ws?sample_rate=%d", serverURL, sampleRate)
+    url := fmt.Sprintf("%s?sample_rate=%d", serverURL, sampleRate)
     conn, _, err := websocket.DefaultDialer.Dial(url, nil)
     if err != nil {
         return nil, fmt.Errorf("failed to connect to Vosk server: %w", err)
