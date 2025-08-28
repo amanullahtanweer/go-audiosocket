@@ -45,7 +45,7 @@ type Session struct {
     audioBuffer []byte
     startTime   time.Time
     stopAmbient chan struct{} // Channel to stop ambient audio
-    interruptDetector *audio.InterruptDetector // Handles keyword detection and audio responses
+    patternMatcher *audio.PatternMatcher // Handles pattern-based interrupt detection
 }
 
 func New(config Config) (*Server, error) {
@@ -163,14 +163,15 @@ func (s *Server) handleConnection(conn net.Conn) {
         stopAmbient: make(chan struct{}),
     }
 
-    // Initialize interrupt detector if audio player is available
+    // Initialize pattern matcher if audio player is available
     if s.audioPlayer != nil {
-        session.interruptDetector = audio.NewInterruptDetector(s.audioPlayer)
-    }
-
-    // Initialize interrupt detector if audio player is available
-    if s.audioPlayer != nil {
-        session.interruptDetector = audio.NewInterruptDetector(s.audioPlayer)
+        var err error
+        session.patternMatcher, err = audio.NewPatternMatcher("./config/interrupts.yaml")
+        if err != nil {
+            log.Printf("Session %s: Failed to initialize pattern matcher: %v", id, err)
+        } else {
+            log.Printf("Session %s: Pattern matcher initialized", id)
+        }
     }
 
     // Play greeting audio if audio player is available
@@ -264,14 +265,16 @@ func (session *Session) handleTranscription() {
                 log.Printf("[%s] Session %s [%s] Final: %s", provider, session.id, timestamp, result.Text)
                 
                 // Check for interrupts only on final transcriptions
-                if session.interruptDetector != nil {
-                    if interruptRule := session.interruptDetector.DetectInterrupt(result.Text); interruptRule != nil {
-                        log.Printf("Session %s: Playing interrupt audio: %s", session.id, interruptRule.Type)
+                if session.patternMatcher != nil {
+                    if interruptRule := session.patternMatcher.DetectInterrupt(result.Text); interruptRule != nil {
+                        log.Printf("Session %s: Pattern match found: %s - %s", session.id, interruptRule.Name, interruptRule.Description)
                         
-                        // Play the interrupt audio
+                        // Play the interrupt audio using the audio player
                         go func() {
-                            if err := session.interruptDetector.PlayInterrupt(interruptRule, session.conn); err != nil {
+                            if err := session.server.audioPlayer.PlayAudio(session.conn, interruptRule.AudioFile); err != nil {
                                 log.Printf("Session %s: Failed to play interrupt audio: %v", session.id, err)
+                            } else {
+                                log.Printf("Session %s: Interrupt audio completed: %s", session.id, interruptRule.Name)
                             }
                         }()
                     }
@@ -287,10 +290,8 @@ func (session *Session) finalize() {
     // Stop ambient audio
     close(session.stopAmbient)
     
-    // Stop any playing interrupts
-    if session.interruptDetector != nil {
-        session.interruptDetector.Stop()
-    }
+    // Pattern matcher doesn't need explicit cleanup
+    // It will be garbage collected automatically
     
     // Get final transcription
     fullTranscript := session.transcriber.GetFullTranscript()

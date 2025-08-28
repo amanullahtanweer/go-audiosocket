@@ -1,0 +1,9 @@
+Session ID: 89728b96-a160-42dc-84a0-23849ea2b91d
+Provider: assemblyai
+Start Time: 2025-08-28 06:52:46
+Duration: 46.879076791s
+Sample Rate: 8000Hz
+
+---TRANSCRIPT---
+
+Stop. Calling. Stop calling. I'm busy. I'm in a meeting. Can you call me back later? Are you a robot? Okay?

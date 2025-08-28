@@ -1,0 +1,143 @@
+# Interrupt Pattern Configuration
+# This file can be modified without recompiling the Go code
+# Patterns are checked in order, first match wins
+
+interrupts:
+  dnc:
+    name: "Do Not Call"
+    description: "Customer wants to be removed from calling list"
+    audio_file: "dnc.wav"
+    priority: 1
+    patterns:
+      # Exact phrase matches
+      - type: "exact"
+        phrases:
+          - "stop calling"
+          - "don't call me"
+          - "quit calling me"
+          - "fuck you"
+          - "get lost"
+          - "take me off the list"
+          - "remove me from the list"
+          - "unsubscribe me"
+      
+      # Word combinations (ALL words must be present)
+      - type: "combo"
+        words:
+          - ["stop", "fuck"]
+          - ["off", "list"]
+          - ["remove", "me"]
+          - ["don't", "call"]
+          - ["quit", "calling"]
+          - ["stop", "calling"]
+      
+      # Required patterns (ALL required words must be present)
+      - type: "required"
+        required_words:
+          - ["stop", "quit", "don't", "cease"]
+          - ["calling", "calls", "call"]
+          - ["me", "my", "myself"]
+      
+      # Alternative patterns (any word from each group)
+      - type: "alternative"
+        word_groups:
+          - ["stop", "quit", "don't", "cease", "halt"]
+          - ["calling", "calls", "call", "contacting"]
+          - ["me", "my", "myself", "this number"]
+
+  robot:
+    name: "Robot Detection"
+    description: "Customer suspects automated system"
+    audio_file: "robot.wav"
+    priority: 2
+    patterns:
+      # Exact phrase matches
+      - type: "exact"
+        phrases:
+          - "are you a robot"
+          - "am i talking to a robot"
+          - "are you human"
+          - "is this automated"
+          - "robot voice"
+          - "automated system"
+      
+      # Word combinations
+      - type: "combo"
+        words:
+          - ["robot", "voice"]
+          - ["automated", "system"]
+          - ["human", "person"]
+      
+      # Required patterns
+      - type: "required"
+        required_words:
+          - ["are", "am", "is"]
+          - ["talking", "speaking", "talking to"]
+          - ["robot", "human", "automated"]
+
+  not_interested:
+    name: "Not Interested"
+    description: "Customer wants to end call"
+    audio_file: "bye.wav"
+    priority: 3
+    patterns:
+      # Exact phrase matches
+      - type: "exact"
+        phrases:
+          - "i am not interested"
+          - "i am annoyed"
+          - "not interested"
+          - "don't want"
+          - "waste of time"
+          - "go away"
+      
+      # Word combinations
+      - type: "combo"
+        words:
+          - ["not", "interested"]
+          - ["don't", "want"]
+          - ["waste", "time"]
+      
+      # Required patterns
+      - type: "required"
+        required_words:
+          - ["not", "don't", "won't"]
+          - ["interested", "want", "need"]
+          - ["this", "it", "that"]
+
+  callback:
+    name: "Callback Request"
+    description: "Customer wants call back later"
+    audio_file: "transfer.wav"
+    priority: 4
+    patterns:
+      # Exact phrase matches
+      - type: "exact"
+        phrases:
+          - "i am busy"
+          - "in a meeting"
+          - "call me back later"
+          - "call back"
+          - "busy now"
+          - "can't talk now"
+      
+      # Word combinations
+      - type: "combo"
+        words:
+          - ["call", "back"]
+          - ["busy", "now"]
+          - ["meeting", "now"]
+      
+      # Required patterns
+      - type: "required"
+        required_words:
+          - ["call", "contact", "reach"]
+          - ["back", "later", "tomorrow"]
+          - ["me", "my", "this number"]
+
+# Pattern matching settings
+settings:
+  case_sensitive: false
+  partial_word_match: true
+  max_words_between: 3  # Allow up to 3 words between required words
+  reload_on_detection: true  # Reload config file on each detection

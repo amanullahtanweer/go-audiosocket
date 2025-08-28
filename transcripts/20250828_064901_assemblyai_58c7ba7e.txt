@@ -1,0 +1,9 @@
+Session ID: 58c7ba7e-eb97-4337-90c4-42cd57439ad0
+Provider: assemblyai
+Start Time: 2025-08-28 06:49:01
+Duration: 16.886913625s
+Sample Rate: 8000Hz
+
+---TRANSCRIPT---
+
+I think I stopped calling. Stop calling.
