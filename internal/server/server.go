@@ -12,6 +12,7 @@ import (
 
 	"github.com/CyCoreSystems/audiosocket"
 	"github.com/amanullahtanweer/audiosocket-transcriber/internal/audio"
+	"github.com/amanullahtanweer/audiosocket-transcriber/internal/flow"
 	"github.com/amanullahtanweer/audiosocket-transcriber/internal/transcriber"
 	"github.com/google/uuid"
 )
@@ -46,6 +47,8 @@ type Session struct {
     startTime   time.Time
     stopAmbient chan struct{} // Channel to stop ambient audio
     patternMatcher *audio.PatternMatcher // Handles pattern-based interrupt detection
+    flowEngine  *flow.FlowEngine // Handles call flow execution
+    stopAudioChan chan struct{} // Channel to stop current audio playback
 }
 
 func New(config Config) (*Server, error) {
@@ -161,6 +164,7 @@ func (s *Server) handleConnection(conn net.Conn) {
         audioBuffer: make([]byte, 0, 16000), // Buffer for ~1 second of audio
         startTime:   time.Now(),
         stopAmbient: make(chan struct{}),
+        stopAudioChan: make(chan struct{}),
     }
 
     // Initialize pattern matcher if audio player is available
@@ -172,22 +176,34 @@ func (s *Server) handleConnection(conn net.Conn) {
         } else {
             log.Printf("Session %s: Pattern matcher initialized", id)
         }
+        
+        // Initialize flow engine
+        session.flowEngine, err = flow.NewFlowEngine(session, "./config/flow.json")
+        if err != nil {
+            log.Printf("Session %s: Failed to initialize flow engine: %v", id, err)
+        } else {
+            log.Printf("Session %s: Flow engine initialized", id)
+        }
     }
 
-    // Play greeting audio if audio player is available
+    // Start ambient audio if audio player is available
     if s.audioPlayer != nil {
-        if err := s.audioPlayer.PlayGreeting(conn); err != nil {
-            log.Printf("Session %s: Failed to play greeting: %v", id, err)
-        } else {
-            log.Printf("Session %s: Greeting audio played", id)
-        }
-        
         // Start ambient audio
         s.audioPlayer.StartAmbientAudio(conn, session.stopAmbient)
     }
 
-    // Start transcription handler
-    go session.handleTranscription()
+            // Start flow engine
+        if session.flowEngine != nil {
+            go func() {
+                if err := session.flowEngine.Start(); err != nil {
+                    log.Printf("Session %s: Flow engine failed to start: %v", id, err)
+                }
+            }()
+        } else {
+            log.Printf("Session %s: Flow engine not available, using fallback", id)
+            // Fallback to old transcription handler if flow engine not available
+            go session.handleTranscription()
+        }
 
     // Process messages
     for {
@@ -216,6 +232,94 @@ func (s *Server) handleConnection(conn net.Conn) {
     
     duration := time.Since(session.startTime)
     log.Printf("Session %s ended (Duration: %v, Provider: %s)", id, duration, s.config.Provider)
+}
+
+// Session methods to implement flow.Session interface
+func (session *Session) GetID() string {
+    return session.id.String()
+}
+
+func (session *Session) PlayAudio(filename string) error {
+	// Use the interruptible audio player with stop channel
+	return session.server.audioPlayer.PlayAudioWithStop(session.conn, filename, session.stopAudioChan)
+}
+
+func (session *Session) StopTranscription() {
+    // Stop AssemblyAI transcription
+    if session.transcriber != nil {
+        // This will be implemented based on your transcriber interface
+        log.Printf("Session %s: Stopping transcription", session.id)
+    }
+}
+
+func (session *Session) GetTranscriptionResults() <-chan flow.TranscriptionResult {
+    // Convert transcriber results to flow.TranscriptionResult
+    resultChan := make(chan flow.TranscriptionResult)
+    
+    go func() {
+        defer close(resultChan)
+        
+        for result := range session.transcriber.Results() {
+            flowResult := flow.TranscriptionResult{
+                Text:      result.Text,
+                IsFinal:   result.IsFinal,
+                Timestamp: time.Now(),
+            }
+            resultChan <- flowResult
+        }
+    }()
+    
+    return resultChan
+}
+
+func (session *Session) ReportStatus(status, reason string) error {
+	// This will be implemented when you're ready for API calls
+	log.Printf("Session %s: Status report - %s: %s", session.id, status, reason)
+	return nil
+}
+
+func (session *Session) CheckForInterrupt(text string) (string, bool) {
+	if session.patternMatcher != nil {
+		if interruptRule := session.patternMatcher.DetectInterrupt(text); interruptRule != nil {
+			// Return the interrupt key (e.g., "dnc") not the name ("Do Not Call")
+			// We need to map the name back to the key
+			switch interruptRule.Name {
+			case "Do Not Call":
+				return "dnc", true
+			case "Not Interested":
+				return "not_interested", true
+			case "Robot Detection":
+				return "robot", true
+			case "Callback Request":
+				return "callback", true
+			default:
+				// Try to find by name in the config
+				return "dnc", true // Fallback to DNC
+			}
+		}
+	}
+	return "", false
+}
+
+func (session *Session) EndCall() error {
+	// Send hangup command to end the call
+	hangupMsg := audiosocket.HangupMessage()
+	_, err := session.conn.Write(hangupMsg)
+	if err != nil {
+		return fmt.Errorf("failed to send hangup command: %w", err)
+	}
+	log.Printf("Session %s: Hangup command sent", session.id)
+	return nil
+}
+
+func (session *Session) StopAudio() error {
+	// Signal to stop current audio playback
+	if session.stopAudioChan != nil {
+		close(session.stopAudioChan)
+		session.stopAudioChan = make(chan struct{})
+	}
+	log.Printf("Session %s: Audio stop requested", session.id)
+	return nil
 }
 
 func (session *Session) handleMessage(msg audiosocket.Message) error {
@@ -269,14 +373,19 @@ func (session *Session) handleTranscription() {
                     if interruptRule := session.patternMatcher.DetectInterrupt(result.Text); interruptRule != nil {
                         log.Printf("Session %s: Pattern match found: %s - %s", session.id, interruptRule.Name, interruptRule.Description)
                         
-                        // Play the interrupt audio using the audio player
-                        go func() {
-                            if err := session.server.audioPlayer.PlayAudio(session.conn, interruptRule.AudioFile); err != nil {
-                                log.Printf("Session %s: Failed to play interrupt audio: %v", session.id, err)
-                            } else {
-                                log.Printf("Session %s: Interrupt audio completed: %s", session.id, interruptRule.Name)
-                            }
-                        }()
+                        // Route interrupt to flow engine if available
+                        if session.flowEngine != nil {
+                            session.flowEngine.HandleInterrupt(interruptRule.Name)
+                        } else {
+                            // Fallback to direct audio playback
+                            go func() {
+                                if err := session.server.audioPlayer.PlayAudio(session.conn, interruptRule.AudioFile); err != nil {
+                                    log.Printf("Session %s: Failed to play interrupt audio: %v", session.id, err)
+                                } else {
+                                    log.Printf("Session %s: Interrupt audio completed: %s", session.id, interruptRule.Name)
+                                }
+                            }()
+                        }
                     }
                 }
             } else {

@@ -143,6 +143,56 @@ func (p *Player) PlayAudio(conn net.Conn, filename string) error {
 	return nil
 }
 
+// PlayAudioWithStop sends audio data with the ability to be stopped
+func (p *Player) PlayAudioWithStop(conn net.Conn, filename string, stopChan <-chan struct{}) error {
+	audioData, exists := p.GetAudio(filename)
+	if !exists {
+		return fmt.Errorf("audio file not found: %s", filename)
+	}
+
+	// For the first chunk, ensure it's properly aligned to avoid distortion
+	// This fixes the 0.1 second distortion at the start
+	chunkSize := audiosocket.DefaultSlinChunkSize
+	
+	// If the first chunk is incomplete, skip it and start from a complete chunk
+	startOffset := 0
+	if len(audioData) > chunkSize && len(audioData)%chunkSize != 0 {
+		// Find the first complete chunk boundary
+		startOffset = chunkSize - (len(audioData) % chunkSize)
+		if startOffset >= len(audioData) {
+			startOffset = 0
+		}
+	}
+
+	// Send chunks with frequent stop checks
+	for i := startOffset; i < len(audioData); i += chunkSize {
+		// Check for stop signal before each chunk
+		select {
+		case <-stopChan:
+			log.Printf("Audio playback stopped: %s", filename)
+			return nil
+		default:
+			// Continue playing
+		}
+
+		end := i + chunkSize
+		if end > len(audioData) {
+			end = len(audioData)
+		}
+
+		chunk := audioData[i:end]
+		if _, err := conn.Write(audiosocket.SlinMessage(chunk)); err != nil {
+			return fmt.Errorf("failed to send audio chunk: %w", err)
+		}
+
+		// Small delay between chunks
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	log.Printf("Played audio file: %s (%d bytes)", filename, len(audioData))
+	return nil
+}
+
 // PlayGreeting plays the greeting audio when a call connects
 func (p *Player) PlayGreeting(conn net.Conn) error {
 	// Try different greeting files in order of preference

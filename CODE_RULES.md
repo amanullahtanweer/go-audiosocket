@@ -22,6 +22,24 @@ chunkSize := 160  // WRONG!
 ticker := time.NewTicker(20 * time.Millisecond)  // WRONG!
 ```
 
+#### **First Chunk Alignment Rule - CRITICAL!**
+```go
+// ✅ CORRECT - Ensure first chunk is perfectly aligned
+chunkSize := audiosocket.DefaultSlinChunkSize
+startOffset := 0
+if len(audioData) > chunkSize && len(audioData)%chunkSize != 0 {
+    // Find first complete chunk boundary to avoid 0.1s distortion
+    startOffset = chunkSize - (len(audioData) % chunkSize)
+    if startOffset >= len(audioData) {
+        startOffset = 0
+    }
+}
+// Start from offset to ensure clean first chunk
+for i := startOffset; i < len(audioData); i += chunkSize {
+    // ... chunk processing
+}
+```
+
 #### **Why This Matters:**
 - **Wrong chunk size = Audio plays in slow motion**
 - **Custom timing = Audio corruption and distortion**
@@ -58,6 +76,8 @@ internal/transcriber/        # Transcription providers
 2. **Don't use custom tickers** - use `audiosocket.SendSlinChunks()`
 3. **Don't guess chunk sizes** - use `DefaultSlinChunkSize`
 4. **Don't send audio too fast** - let AudioSocket handle timing
+5. **Don't ignore first chunk alignment** - incomplete first chunks cause 0.1s distortion
+6. **Don't overcomplicate working systems** - make minimal, targeted fixes
 
 ### **Session Management:**
 1. **Always close connections** with `defer conn.Close()`
@@ -92,12 +112,34 @@ internal/transcriber/        # Transcription providers
 
 ---
 
+## 🎓 LESSONS LEARNED (HARD WAY)
+
+### **First Chunk Distortion Issue (2025-08-28):**
+**Problem:** Brief 0.1 second distortion/click at the start of audio playback
+**Root Cause:** First audio chunk not perfectly aligned to 320-byte boundaries
+**Wrong Solution:** Completely rewriting working audio system (broke everything)
+**Correct Solution:** Minimal fix to skip incomplete first chunks
+**Lesson:** Never break what's already working - make surgical fixes only
+
+### **Audio System Over-Engineering:**
+**Problem:** Tried to fix 0.1s distortion by rewriting entire audio system
+**Result:** Broke full audio playback (only 0.1s played)
+**Lesson:** 
+- Listen to user's exact problem description
+- Make minimal, targeted changes
+- Test small fixes before big changes
+- Preserve existing working functionality
+
+---
+
 ## 🔍 DEBUGGING CHECKLIST
 
 ### **Audio Issues:**
 - [ ] Check chunk size (must be 320 bytes)
 - [ ] Verify WAV format (8kHz, 16-bit, mono)
 - [ ] Check audio file loading logs
+- [ ] Verify first chunk alignment (no incomplete chunks at start)
+- [ ] Check for 0.1s distortion at audio start (indicates chunk alignment issue)
 - [ ] Verify `audiosocket.SendSlinChunks()` usage
 
 ### **Performance Issues:**

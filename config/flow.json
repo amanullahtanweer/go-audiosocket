@@ -1,0 +1,170 @@
+{
+  "metadata": {
+    "name": "Medicare Screening Flow",
+    "version": "1.0",
+    "description": "Screens users for Medicare eligibility and interest"
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "question",
+      "content": "Start of call",
+      "audio_file": "hello.wav",
+      "transitions": {
+        "default": "greeting"
+      }
+    },
+    {
+      "id": "greeting",
+      "type": "question",
+      "content": "Start of call",
+      "audio_file": "greeting.wav",
+      "transitions": {
+        "default": "pitch"
+      }
+    },
+
+    {
+      "id": "pitch",
+      "type": "question",
+      "content": "I'm calling to see if you currently have a Medicare plan. Do you have Medicare coverage?",
+      "audio_file": "pitch.wav",
+      "transitions": {
+        "positive": "transfer",
+        "negative": "bye",
+        "unknown": "pitch_retry"
+      }
+    },
+    {
+      "id": "pitch_retry",
+      "type": "question",
+      "content": "I'm calling to see if you currently have a Medicare plan. Do you have Medicare coverage?",
+      "audio_file": "pitch_retry.wav",
+      "transitions": {
+        "positive": "transfer",
+        "negative": "bye",
+        "default": "transfer"
+      }
+    },
+    {
+      "id": "dnc",
+      "type": "interrupt",
+      "content": "Caller requested to be removed from the call list",
+      "audio_file": "dnc.wav",
+      "transitions": {
+        "default": "end_call"
+      },
+      "actions": [
+        {
+          "type": "api_call",
+          "endpoint": "/add_to_dnc",
+          "method": "GET"
+        },
+        {
+          "type": "log",
+          "message": "DNC request - added to do-not-call list"
+        }
+      ]
+    },
+    {
+      "id": "not_interested",
+      "type": "interrupt",
+      "content": "Caller is not interested in Medicare benefits",
+      "audio_file": "bye.wav",
+      "transitions": {
+        "default": "end_call"
+      },
+      "actions": [
+        {
+          "type": "api_call",
+          "endpoint": "/mark_not_interested",
+          "method": "GET"
+        },
+        {
+          "type": "log",
+          "message": "User not interested - marked in system"
+        }
+      ]
+    },
+    {
+      "id": "robot",
+      "type": "interrupt",
+      "content": "Caller asking if this is a robot",
+      "audio_file": "robot.wav",
+      "transitions": {
+        "default": "pitch"
+      }
+    },
+    {
+      "id": "callback",
+      "type": "interrupt",
+      "content": "Caller wants a callback later",
+      "audio_file": "callback.wav",
+      "transitions": {
+        "default": "end_call"
+      },
+      "actions": [
+        {
+          "type": "api_call",
+          "endpoint": "/schedule_callback",
+          "method": "GET"
+        },
+        {
+          "type": "log",
+          "message": "Callback requested - scheduled for later"
+        }
+      ]
+    },
+    {
+      "id": "transfer",
+      "type": "transfer",
+      "content": "Transferring you now. Please stay on the line.",
+      "audio_file": "transfer.wav",
+      "actions": [
+        {
+          "type": "api_call",
+          "endpoint": "/transfer_call",
+          "method": "GET"
+        },
+        {
+          "type": "log",
+          "message": "Call transferred to sales queue"
+        }
+      ]
+    },
+    {
+      "id": "bye",
+      "type": "hangup",
+      "content": "Goodbye!",
+      "audio_file": "bye.wav",
+      "actions": [
+        {
+          "type": "api_call",
+          "endpoint": "/end_call",
+          "method": "GET"
+        },
+        {
+          "type": "log",
+          "message": "Call ended"
+        }
+      ]
+    },
+    {
+      "id": "end_call",
+      "type": "hangup",
+      "content": "Call ended",
+      "audio_file": "bye.wav",
+      "actions": [
+        {
+          "type": "api_call",
+          "endpoint": "/end_call",
+          "method": "GET"
+        },
+        {
+          "type": "log",
+          "message": "Call ended"
+        }
+      ]
+    }
+  ]
+}
