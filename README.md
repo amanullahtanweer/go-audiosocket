@@ -1,6 +1,33 @@
-# AudioSocket
+# AudioSocket Transcriber
 
-[![](https://godoc.org/github.com/CyCoreSystems/audiosocket?status.svg)](http://godoc.org/github.com/CyCoreSystems/audiosocket)
+[![](https://godoc.org/github.com/CyCoreSystems/audiosocket?status.svg)](http://godoc.org/CyCoreSystems/audiosocket)
+
+**🚨 CRITICAL: Read [CODE_RULES.md](CODE_RULES.md) before making any audio-related changes!**
+
+This project extends AudioSocket with real-time transcription capabilities, supporting both Vosk and AssemblyAI providers.
+
+## 🎯 Project Overview
+
+AudioSocket Transcriber is a TCP-based server that:
+- Listens for AudioSocket connections on port 9019
+- Provides real-time audio transcription using Vosk or AssemblyAI
+- Supports audio playback (greeting + ambient audio)
+- Saves transcripts and raw audio files
+
+## ⚠️ IMPORTANT AUDIO RULES
+
+**NEVER FORGET: Audio chunk size must be 320 bytes (8000Hz × 20ms × 2 bytes)**
+
+- ❌ **Wrong**: Custom chunk sizes like 160 bytes
+- ✅ **Correct**: Use `audiosocket.DefaultSlinChunkSize`
+- ❌ **Wrong**: Custom timing implementations  
+- ✅ **Correct**: Use `audiosocket.SendSlinChunks()`
+
+**See [CODE_RULES.md](CODE_RULES.md) for complete rules and troubleshooting!**
+
+---
+
+# Original AudioSocket Library
 
 AudioSocket is a simple TCP-based protocol for sending and receiving realtime
 audio streams.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/CyCoreSystems/audiosocket"
+	"github.com/amanullahtanweer/audiosocket-transcriber/internal/audio"
 	"github.com/amanullahtanweer/audiosocket-transcriber/internal/transcriber"
 	"github.com/google/uuid"
 )
@@ -25,13 +26,15 @@ type Config struct {
     OutputDir       string
     SaveTranscripts bool
     SaveAudio       bool
+    AudioDir        string // Directory containing audio files
 }
 
 type Server struct {
-    config   Config
-    listener net.Listener
-    wg       sync.WaitGroup
-    shutdown chan struct{}
+    config     Config
+    listener   net.Listener
+    wg         sync.WaitGroup
+    shutdown   chan struct{}
+    audioPlayer *audio.Player
 }
 
 type Session struct {
@@ -41,6 +44,8 @@ type Session struct {
     server      *Server
     audioBuffer []byte
     startTime   time.Time
+    stopAmbient chan struct{} // Channel to stop ambient audio
+    interruptDetector *audio.InterruptDetector // Handles keyword detection and audio responses
 }
 
 func New(config Config) (*Server, error) {
@@ -51,9 +56,20 @@ func New(config Config) (*Server, error) {
         }
     }
 
+    // Initialize audio player if audio directory is specified
+    var audioPlayer *audio.Player
+    if config.AudioDir != "" {
+        var err error
+        audioPlayer, err = audio.NewPlayer(config.AudioDir)
+        if err != nil {
+            return nil, fmt.Errorf("failed to initialize audio player: %w", err)
+        }
+    }
+
     return &Server{
-        config:   config,
-        shutdown: make(chan struct{}),
+        config:     config,
+        shutdown:   make(chan struct{}),
+        audioPlayer: audioPlayer,
     }, nil
 }
 
@@ -144,6 +160,29 @@ func (s *Server) handleConnection(conn net.Conn) {
         server:      s,
         audioBuffer: make([]byte, 0, 16000), // Buffer for ~1 second of audio
         startTime:   time.Now(),
+        stopAmbient: make(chan struct{}),
+    }
+
+    // Initialize interrupt detector if audio player is available
+    if s.audioPlayer != nil {
+        session.interruptDetector = audio.NewInterruptDetector(s.audioPlayer)
+    }
+
+    // Initialize interrupt detector if audio player is available
+    if s.audioPlayer != nil {
+        session.interruptDetector = audio.NewInterruptDetector(s.audioPlayer)
+    }
+
+    // Play greeting audio if audio player is available
+    if s.audioPlayer != nil {
+        if err := s.audioPlayer.PlayGreeting(conn); err != nil {
+            log.Printf("Session %s: Failed to play greeting: %v", id, err)
+        } else {
+            log.Printf("Session %s: Greeting audio played", id)
+        }
+        
+        // Start ambient audio
+        s.audioPlayer.StartAmbientAudio(conn, session.stopAmbient)
     }
 
     // Start transcription handler
@@ -223,6 +262,20 @@ func (session *Session) handleTranscription() {
             
             if result.IsFinal {
                 log.Printf("[%s] Session %s [%s] Final: %s", provider, session.id, timestamp, result.Text)
+                
+                // Check for interrupts only on final transcriptions
+                if session.interruptDetector != nil {
+                    if interruptRule := session.interruptDetector.DetectInterrupt(result.Text); interruptRule != nil {
+                        log.Printf("Session %s: Playing interrupt audio: %s", session.id, interruptRule.Type)
+                        
+                        // Play the interrupt audio
+                        go func() {
+                            if err := session.interruptDetector.PlayInterrupt(interruptRule, session.conn); err != nil {
+                                log.Printf("Session %s: Failed to play interrupt audio: %v", session.id, err)
+                            }
+                        }()
+                    }
+                }
             } else {
                 log.Printf("[%s] Session %s [%s] Partial: %s", provider, session.id, timestamp, result.Text)
             }
@@ -231,6 +284,14 @@ func (session *Session) handleTranscription() {
 }
 
 func (session *Session) finalize() {
+    // Stop ambient audio
+    close(session.stopAmbient)
+    
+    // Stop any playing interrupts
+    if session.interruptDetector != nil {
+        session.interruptDetector.Stop()
+    }
+    
     // Get final transcription
     fullTranscript := session.transcriber.GetFullTranscript()
     

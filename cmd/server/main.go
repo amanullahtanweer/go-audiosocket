@@ -59,6 +59,7 @@ func main() {
         OutputDir:       config.Transcription.OutputDir,
         SaveTranscripts: config.Transcription.SaveTranscripts,
         SaveAudio:       config.Transcription.SaveAudio,
+        AudioDir:        "./audios", // Directory containing audio files
     }
 
     // Add provider-specific config
