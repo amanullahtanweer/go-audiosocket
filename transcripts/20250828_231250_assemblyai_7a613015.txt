@@ -1,0 +1,9 @@
+Session ID: 7a613015-559f-4de7-b173-fb723345ca95
+Provider: assemblyai
+Start Time: 2025-08-28 23:12:50
+Duration: 16.151232208s
+Sample Rate: 8000Hz
+
+---TRANSCRIPT---
+
+Hey. Hello. Let me off the list.

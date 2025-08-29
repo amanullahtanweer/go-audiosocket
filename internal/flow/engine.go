@@ -225,9 +225,9 @@ func (fe *FlowEngine) waitForResponse(node *FlowNode) {
 		select {
 		case result := <-transcriptionChan:
 			if !result.IsFinal {
-				// Partial transcript - reset timer (but not too aggressively)
-				// Only reset if we haven't reset recently to avoid excessive resets
-				if fe.timer.IsActive() {
+				// Partial transcript - only reset timer for substantial partials
+				// This prevents excessive resets and premature flow transitions
+				if fe.timer.IsActive() && len(result.Text) > 10 {
 					fe.timer.Reset()
 				}
 				continue
@@ -261,6 +261,16 @@ func (fe *FlowEngine) waitForResponse(node *FlowNode) {
 					log.Printf("Flow transition: %s (%s) -> %s (%s) | Response: %s",
 						node.ID, node.Content, nextNode.ID, nextNode.Content, responseType)
 
+					// Stop current audio completely before transitioning
+					if fe.waitingFor != nil {
+						if err := fe.session.StopAudio(); err != nil {
+							log.Printf("Warning: Failed to stop audio: %v", err)
+						}
+						
+						// Small delay to ensure audio stops completely
+						time.Sleep(100 * time.Millisecond)
+					}
+
 					fe.timer.Stop()
 					fe.waitingFor = nil
 					fe.currentNode = nextNode
@@ -284,6 +294,14 @@ func (fe *FlowEngine) handleTimeout() {
 	if fe.waitingFor == nil {
 		return
 	}
+
+	// Stop current audio before timeout transition
+	if err := fe.session.StopAudio(); err != nil {
+		log.Printf("Warning: Failed to stop audio during timeout: %v", err)
+	}
+	
+	// Small delay to ensure audio stops completely
+	time.Sleep(100 * time.Millisecond)
 
 	// Find timeout transition
 	nextNodeID := fe.waitingFor.Transitions["timeout"]
@@ -313,6 +331,9 @@ func (fe *FlowEngine) HandleInterrupt(interruptType string) {
 	if err := fe.session.StopAudio(); err != nil {
 		log.Printf("Warning: Failed to stop audio: %v", err)
 	}
+	
+	// Small delay to ensure audio stops completely
+	time.Sleep(100 * time.Millisecond)
 
 	// Find interrupt node
 	interruptNode := fe.findNode(interruptType)
