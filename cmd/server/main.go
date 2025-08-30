@@ -22,6 +22,7 @@ type Config struct {
         OutputDir       string `yaml:"output_dir"`
         SaveTranscripts bool   `yaml:"save_transcripts"`
         SaveAudio       bool   `yaml:"save_audio"`
+        SaveSessionLogs bool   `yaml:"save_session_logs"`
     } `yaml:"transcription"`
     
     Vosk struct {
@@ -33,6 +34,23 @@ type Config struct {
         APIKey     string `yaml:"api_key"`
         SampleRate int    `yaml:"sample_rate"`
     } `yaml:"assemblyai"`
+
+    Vicidial struct {
+        ServerURL      string `yaml:"server_url"`
+        AdminDir       string `yaml:"admin_dir"`
+        APIUser        string `yaml:"api_user"`
+        APIPass        string `yaml:"api_pass"`
+        SourceRA       string `yaml:"source_ra"`
+        SourceAdmin    string `yaml:"source_admin"`
+        TransferStatus string `yaml:"transfer_status"`
+        TransferPhone  string `yaml:"transfer_phone"`
+    } `yaml:"vicidial"`
+
+    Redis struct {
+        Addr   string `yaml:"addr"`   // default localhost:6379
+        DB     int    `yaml:"db"`     // default 0
+        Prefix string `yaml:"prefix"` // optional; leave empty to use bare UUID keys
+    } `yaml:"redis"`
 }
 
 func main() {
@@ -59,7 +77,19 @@ func main() {
         OutputDir:       config.Transcription.OutputDir,
         SaveTranscripts: config.Transcription.SaveTranscripts,
         SaveAudio:       config.Transcription.SaveAudio,
+        SaveSessionLogs: config.Transcription.SaveSessionLogs,
         AudioDir:        "./audios", // Directory containing audio files
+        VicidialServerURL:   config.Vicidial.ServerURL,
+        VicidialAdminDir:    config.Vicidial.AdminDir,
+        VicidialAPIUser:     config.Vicidial.APIUser,
+        VicidialAPIPass:     config.Vicidial.APIPass,
+        VicidialSourceRA:    config.Vicidial.SourceRA,
+        VicidialSourceAdmin: config.Vicidial.SourceAdmin,
+        TransferStatus:      config.Vicidial.TransferStatus,
+        TransferPhone:       config.Vicidial.TransferPhone,
+        RedisAddr:           config.Redis.Addr,
+        RedisDB:             config.Redis.DB,
+        RedisPrefix:         config.Redis.Prefix,
     }
 
     // Add provider-specific config

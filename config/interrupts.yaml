@@ -135,6 +135,41 @@ interrupts:
           - ["back", "later", "tomorrow"]
           - ["me", "my", "this number"]
 
+  amd:
+    name: "Answering Machine"
+    description: "Detected voicemail or answering machine"
+    audio_file: "bye.wav"
+    priority: 5
+    patterns:
+      # Exact phrase matches indicating voicemail
+      - type: "exact"
+        phrases:
+          - "leave a message"
+          - "not available"
+          - "after the tone"
+          - "after the beep"
+          - "leave your message"
+          - "leave your name"
+          - "answering machine"
+          - "voice mail"
+          - "voicemail"
+          - "record your message"
+          - "you have reached"
+          - "no one is available"
+          - "sorry the mailbox is full"
+          - "mailbox"
+
+      # Word combinations commonly present in voicemail prompts
+      - type: "combo"
+        words:
+          - ["leave", "message"]
+          - ["after", "tone"]
+          - ["after", "beep"]
+          - ["voice", "mail"]
+          - ["mailbox", "full"]
+          - ["not", "available"]
+          - ["record", "message"]
+
 # Pattern matching settings
 settings:
   case_sensitive: false

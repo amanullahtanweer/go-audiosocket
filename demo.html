@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flow Session Viewer (single-file)</title>
+  <style>
+    :root { --bg:#0b0f14; --card:#121821; --muted:#8aa0b6; --text:#e6eef6; --accent:#4cc9f0; --ok:#2dd4bf; --warn:#f59e0b; --err:#ef4444; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: var(--text); background: radial-gradient(70rem 70rem at 10% -10%, #101827, #0b0f14); }
+    header { padding: 16px 20px; border-bottom: 1px solid #223044; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+    header h1 { font-size: 16px; margin: 0; letter-spacing: 0.2px; color: var(--accent); }
+    .controls { display:flex; gap:8px; flex-wrap: wrap; align-items:center; }
+    .btn, label.btn { background: var(--card); color: var(--text); border: 1px solid #223044; padding: 8px 12px; border-radius: 10px; cursor: pointer; transition: 120ms ease; display:inline-flex; gap:8px; align-items:center; }
+    .btn:hover { border-color:#2a3a55; box-shadow: 0 0 0 2px #1d2a40 inset; }
+    input[type="file"] { display:none; }
+    textarea { width: 100%; min-height: 120px; resize: vertical; background: #0d1420; color: #def; border: 1px solid #24334a; border-radius: 10px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .wrap { display: grid; grid-template-columns: 360px 1fr; gap: 14px; padding: 14px; }
+    .card { background: rgba(18,24,33,.82); border: 1px solid #1c2a40; border-radius: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+    .card h2 { margin: 0; padding: 12px 14px; font-size: 13px; font-weight: 600; letter-spacing: .3px; border-bottom: 1px solid #1c2a40; color:#9ec7ff; }
+    .card .content { padding: 12px 14px; }
+    .kv { display:grid; grid-template-columns: 120px 1fr; gap: 6px 10px; }
+    .kv div { padding: 2px 0; color: var(--muted); }
+    .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #2a3a55; color:#cfe3ff; background:#0f1725; }
+    .pill.err { border-color: var(--err); color: #ffe1e1; background: #2a0f14; }
+    .pill.ok { border-color: var(--ok); color:#dffff7; background:#0f2a26; }
+    .pill.warn { border-color: var(--warn); color:#fff5d7; background:#2a230f; }
+    .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .table th, .table td { padding: 8px 8px; border-bottom: 1px solid #1c2a40; text-align: left; vertical-align: top; }
+    .table th { color:#9fb; font-weight:600; position: sticky; top:0; background: #141b28; z-index:1; }
+    .scroller { max-height: 420px; overflow:auto; border-radius: 0 0 14px 14px; }
+    .row-hl { outline: 2px solid var(--accent); outline-offset: -2px; background: #0e1a2a; }
+    .legend { display:flex; gap:6px; flex-wrap: wrap; }
+    .legend .pill { border-color:#20324d; background:#0f1725; color:#b7c7dd; }
+    .svg-wrap { position: relative; background: #0d1420; border: 1px solid #24334a; border-radius: 10px; }
+    svg { width: 100%; height: 560px; display:block; }
+    .node { cursor: pointer; }
+    .node rect { fill:#0f1b2b; stroke:#2a3a55; stroke-width:1; rx:10; ry:10; }
+    .node text { font-size: 12px; fill: #e6eef6; }
+    .edge { stroke:#385074; stroke-width:1.3; fill:none; }
+    .edge-label { font-size: 11px; fill:#a8c1dd; }
+    .arrow { fill:#385074; }
+    .badge { font-size: 11px; padding:2px 6px; border-radius:8px; background:#0f1725; border:1px solid #223044; color:#cfe3ff; }
+    .muted { color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .foot { padding: 8px 14px; color:#8aa0b6; font-size: 12px; border-top: 1px solid #1c2a40; }
+    .dropzone { border: 1px dashed #2a3a55; padding: 10px; border-radius: 10px; color:#bcd; text-align:center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Flow Session Viewer</h1>
+    <div class="controls">
+      <label class="btn" for="fileInput">Open log file</label>
+      <input id="fileInput" type="file" accept=".log,.json,.jsonl,.txt" />
+      <button id="demoBtn" class="btn">Load demo</button>
+      <button id="clearBtn" class="btn">Clear</button>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div class="card">
+      <h2>Paste JSON lines</h2>
+      <div class="content">
+        <div class="dropzone" id="dropzone">Drop file here, or paste JSONL below</div>
+        <textarea id="inputArea" placeholder='One JSON object per line. Example: {"ts":"2025-08-29T05:16:18.22+05:00","event":"flow_start",...}'></textarea>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button id="parseBtn" class="btn">Parse</button>
+          <span id="status" class="muted"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Session summary</h2>
+      <div class="content">
+        <div class="kv" id="summaryKV"></div>
+        <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;" id="statsPills"></div>
+      </div>
+      <div class="foot">Click a node to highlight its rows in the timeline</div>
+    </div>
+
+    <div class="card" style="grid-column: 1 / span 2;">
+      <h2>Flow graph</h2>
+      <div class="content">
+        <div class="svg-wrap">
+          <svg id="graph" viewBox="0 0 1200 560" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="grid-column: 1 / span 2;">
+      <h2>Timeline</h2>
+      <div class="scroller">
+        <table class="table" id="timeline">
+          <thead>
+            <tr>
+              <th style="width: 200px;">Timestamp</th>
+              <th style="width: 120px;">Event</th>
+              <th style="width: 140px;">Node</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  const $ = (sel, el=document) => el.querySelector(sel);
+  const $$ = (sel, el=document) => Array.from(el.querySelectorAll(sel));
+
+  const state = {
+    events: [],
+    nodes: new Map(), // node_id -> { id, type, label }
+    edges: [], // { from, to, reason, count }
+    nodeOrder: [],
+    byNodeRows: new Map(), // node_id -> [tr,...]
+    session: {},
+  };
+
+  function parseLines(text) {
+    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    const events = [];
+    const errs = [];
+    for (let i=0;i<lines.length;i++) {
+      try {
+        const obj = JSON.parse(lines[i]);
+        if (obj && obj.ts && obj.event) events.push(obj);
+      } catch (e) { errs.push({ line: i+1, error: e.message }); }
+    }
+    // sort by timestamp if present
+    events.sort((a,b)=> new Date(a.ts) - new Date(b.ts));
+    return { events, errs };
+  }
+
+  function buildModel(events){
+    state.events = events;
+    state.nodes.clear();
+    state.edges = [];
+    state.nodeOrder = [];
+    state.byNodeRows.clear();
+
+    const edgeKey = (a,b,r) => `${a}→${b}::${r||''}`;
+    const edgeMap = new Map();
+
+    for (const ev of events){
+      if (ev.session_id) state.session.id = ev.session_id;
+      if (ev.event === 'node_start') {
+        const id = ev.node_id || '(unknown)';
+        if (!state.nodes.has(id)) {
+          state.nodes.set(id, { id, type: ev.node_type || '', label: ev.node_content || id });
+          state.nodeOrder.push(id);
+        }
+      }
+      if (ev.event === 'transition'){
+        const from = ev.node_id || '(unknown)';
+        const to = ev.next_node_id || '(unknown)';
+        if (!state.nodes.has(from)) { state.nodes.set(from, { id: from, type: '', label: from }); state.nodeOrder.push(from); }
+        if (!state.nodes.has(to)) { state.nodes.set(to, { id: to, type: '', label: to }); state.nodeOrder.push(to); }
+        const key = edgeKey(from,to, ev.details?.reason);
+        const e = edgeMap.get(key) || { from, to, reason: ev.details?.reason || '', count: 0 };
+        e.count++;
+        edgeMap.set(key, e);
+      }
+    }
+    state.edges = Array.from(edgeMap.values());
+
+    // session meta
+    const first = events[0]?.ts; const last = events.at(-1)?.ts;
+    state.session.started = first ? new Date(first) : null;
+    state.session.ended = last ? new Date(last) : null;
+    state.session.durationMs = (state.session.started && state.session.ended) ? (state.session.ended - state.session.started) : 0;
+  }
+
+  function fmtTs(ts){
+    try { return new Date(ts).toLocaleString(); } catch { return ts; }
+  }
+
+  function renderSummary(){
+    const kv = $('#summaryKV');
+    kv.innerHTML = '';
+    const add = (k,v) => { const kd=document.createElement('div'); kd.textContent=k; const vd=document.createElement('div'); vd.innerHTML=v; kv.append(kd,vd); };
+    add('Session ID', `<span class="mono">${state.session.id||'-'}</span>`);
+    add('Started', state.session.started ? state.session.started.toLocaleString() : '-');
+    add('Ended', state.session.ended ? state.session.ended.toLocaleString() : '-');
+    const dur = state.session.durationMs ? (state.session.durationMs/1000).toFixed(1)+'s' : '-';
+    add('Duration', dur);
+
+    const counts = {
+      nodes: state.nodes.size,
+      edges: state.edges.length,
+      events: state.events.length,
+      qna: state.events.filter(e=>e.event==='qna').length,
+      interrupts: state.events.filter(e=>e.event==='interrupt').length,
+      apiCalls: state.events.filter(e=>e.event==='api_call').length,
+      errors: state.events.filter(e=>e.event==='api_call' && e.details?.status!=='ok').length,
+    };
+
+    const pills = $('#statsPills'); pills.innerHTML='';
+    const pill = (label, cls='') => { const s=document.createElement('span'); s.className='pill '+cls; s.textContent=label; pills.appendChild(s); };
+    pill(`Events ${counts.events}`);
+    pill(`Nodes ${counts.nodes}`);
+    pill(`Edges ${counts.edges}`);
+    pill(`Q&A ${counts.qna}`);
+    counts.interrupts && pill(`Interrupts ${counts.interrupts}`, 'warn');
+    counts.apiCalls && pill(`API calls ${counts.apiCalls}`);
+    counts.errors && pill(`Errors ${counts.errors}`, 'err');
+  }
+
+  function renderTimeline(){
+    const tbody = $('#timeline tbody');
+    tbody.innerHTML='';
+    state.byNodeRows.clear();
+
+    for (const ev of state.events){
+      const tr = document.createElement('tr');
+      tr.dataset.nodeId = ev.node_id || ev.next_node_id || '';
+      const det = (()=>{
+        switch(ev.event){
+          case 'node_start': return `${ev.node_type||''}${ev.node_content? ' — '+escapeHtml(ev.node_content): ''}`;
+          case 'qna': return `<span class="badge">"${escapeHtml(ev.text||'')}"</span> <span class="muted">(${ev.classification||'n/a'})</span>`;
+          case 'transition': return `→ <b>${escapeHtml(ev.next_node_id||'')}</b> <span class="muted">${ev.details?.reason? '('+escapeHtml(ev.details.reason)+')':''}</span>`;
+          case 'api_call': return `<span class="mono">${ev.details?.endpoint||''}</span> <span class="pill ${ev.details?.status==='ok'?'ok':ev.details?.status==='error'?'err':'warn'}">${ev.details?.status||''}</span>`;
+          case 'interrupt': return `<span class="pill warn">${escapeHtml(ev.interrupt||'interrupt')}</span> ${escapeHtml(ev.text||'')}`;
+          case 'flow_start': return `${escapeHtml(ev.details?.name||'')} v${escapeHtml(ev.details?.version||'')}`;
+          case 'flow_end': return `${escapeHtml(ev.details?.reason||'')}`;
+          case 'hangup': return ``;
+          default: return JSON.stringify(ev);
+        }
+      })();
+
+      tr.innerHTML = `
+        <td class="mono">${fmtTs(ev.ts)}</td>
+        <td>${ev.event}</td>
+        <td>${escapeHtml(ev.node_id||'')}</td>
+        <td>${det}</td>
+      `;
+
+      tbody.appendChild(tr);
+
+      const nid = tr.dataset.nodeId;
+      if (nid){
+        if (!state.byNodeRows.has(nid)) state.byNodeRows.set(nid, []);
+        state.byNodeRows.get(nid).push(tr);
+      }
+    }
+  }
+
+  function layoutGraph(){
+    // simple layered layout using BFS from 'start' if exists
+    const adj = new Map();
+    for (const e of state.edges){
+      if (!adj.has(e.from)) adj.set(e.from, new Set());
+      adj.get(e.from).add(e.to);
+    }
+    const nodes = Array.from(state.nodes.values());
+    const levels = new Map();
+    const roots = nodes.filter(n=>n.id==='start' || !Array.from(state.edges).some(e=>e.to===n.id));
+    const queue = [];
+    const seen = new Set();
+    for (const r of (roots.length? roots: [nodes[0]].filter(Boolean))){
+      levels.set(r.id, 0); queue.push(r.id); seen.add(r.id);
+    }
+    while(queue.length){
+      const u = queue.shift();
+      for (const v of (adj.get(u)||[])){
+        if (!levels.has(v)) levels.set(v, (levels.get(u)||0)+1);
+        if (!seen.has(v)) { queue.push(v); seen.add(v); }
+      }
+    }
+    // group by level
+    const byLevel = new Map();
+    for (const n of nodes){
+      const lvl = levels.has(n.id)? levels.get(n.id) : 0;
+      if (!byLevel.has(lvl)) byLevel.set(lvl, []);
+      byLevel.get(lvl).push(n);
+    }
+    // assign positions
+    const positions = new Map();
+    const colWidth = 260, rowHeight = 110, xPad=40, yPad=30, boxW=200, boxH=56;
+    const sortedLevels = Array.from(byLevel.keys()).sort((a,b)=>a-b);
+    for (const lvl of sortedLevels){
+      const arr = byLevel.get(lvl);
+      arr.sort((a,b)=> state.nodeOrder.indexOf(a.id) - state.nodeOrder.indexOf(b.id));
+      arr.forEach((n,i)=>{
+        const x = xPad + lvl * colWidth;
+        const y = yPad + i * rowHeight;
+        positions.set(n.id, { x, y, w: boxW, h: boxH });
+      });
+    }
+    return positions;
+  }
+
+  function renderGraph(){
+    const svg = $('#graph');
+    svg.innerHTML = '';
+    const positions = layoutGraph();
+
+    // defs
+    const defs = el('defs');
+    const marker = el('marker', { id:'arrow', markerWidth: 10, markerHeight: 8, refX: 10, refY: 4, orient:'auto', markerUnits:'strokeWidth' });
+    marker.appendChild(el('path', { d:'M0,0 L10,4 L0,8 Z', class:'arrow'}));
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+
+    // edges first
+    for (const e of state.edges){
+      const a = positions.get(e.from); const b = positions.get(e.to);
+      if (!a || !b) continue;
+      const x1 = a.x + a.w; const y1 = a.y + a.h/2;
+      const x2 = b.x; const y2 = b.y + b.h/2;
+      const mx = (x1 + x2)/2; // simple curve
+      const path = `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
+      const p = el('path', { d:path, class:'edge', 'marker-end':'url(#arrow)'});
+      svg.appendChild(p);
+      // edge label
+      const lx = mx; const ly = (y1+y2)/2 - 6;
+      if (e.reason){
+        const text = el('text', { x: lx, y: ly, class:'edge-label', 'text-anchor':'middle'});
+        text.textContent = e.reason + (e.count>1? ` ×${e.count}`:'');
+        svg.appendChild(text);
+      }
+    }
+
+    // nodes on top
+    for (const n of state.nodes.values()){
+      const pos = positions.get(n.id);
+      if (!pos) continue;
+      const g = el('g', { class:'node', 'data-node-id': n.id });
+      const rect = el('rect', { x: pos.x, y: pos.y, width: pos.w, height: pos.h, rx: 10, ry: 10 });
+      g.appendChild(rect);
+      const title = `${n.id}${n.type? ' • '+n.type:''}`;
+      const t1 = el('text', { x: pos.x + 12, y: pos.y + 20 }); t1.textContent = title; g.appendChild(t1);
+      if (n.label && n.label !== n.id){
+        const t2 = el('text', { x: pos.x + 12, y: pos.y + 38 }); t2.textContent = n.label; t2.style.fill = '#a8c1dd'; g.appendChild(t2);
+      }
+      g.addEventListener('click', ()=> highlightNode(n.id));
+      svg.appendChild(g);
+    }
+  }
+
+  function highlightNode(nodeId){
+    // timeline highlight
+    $$('#timeline tbody tr').forEach(tr=> tr.classList.remove('row-hl'));
+    (state.byNodeRows.get(nodeId)||[]).forEach(tr=> tr.classList.add('row-hl'));
+  }
+
+  function el(name, attrs={}){
+    const n = document.createElementNS('http://www.w3.org/2000/svg', name);
+    for (const [k,v] of Object.entries(attrs)) n.setAttribute(k, v);
+    return n;
+  }
+
+  function escapeHtml(s){
+    return (s||'').toString().replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));
+  }
+
+  function loadDemo(){
+    const sample = [
+      {"ts":"2025-08-29T05:16:18.227973+05:00","event":"flow_start","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","details":{"name":"Medicare Screening Flow","version":"1.0"}},
+      {"ts":"2025-08-29T05:16:18.228868+05:00","event":"node_start","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","node_id":"start","node_type":"question","node_content":"Start of call"},
+      {"ts":"2025-08-29T05:16:22.395459+05:00","event":"qna","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","node_id":"start","node_type":"question","node_content":"Start of call","text":"Hey. Hello.","classification":"unknown"},
+      {"ts":"2025-08-29T05:16:22.395615+05:00","event":"transition","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","node_id":"start","node_type":"question","node_content":"Start of call","next_node_id":"greeting","details":{"reason":"unknown"}},
+      {"ts":"2025-08-29T05:16:22.496663+05:00","event":"node_start","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","node_id":"greeting","node_type":"question","node_content":"Start of call"},
+      {"ts":"2025-08-29T05:16:27.681553+05:00","event":"qna","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","node_id":"greeting","node_type":"question","node_content":"Start of call","text":"Doing? Good. How are you?","classification":"unknown"},
+      {"ts":"2025-08-29T05:16:27.681817+05:00","event":"transition","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","node_id":"greeting","node_type":"question","node_content":"Start of call","next_node_id":"pitch","details":{"reason":"unknown"}},
+      {"ts":"2025-08-29T05:16:27.782779+05:00","event":"node_start","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","node_id":"pitch","node_type":"question","node_content":"I'm calling to see if you currently have a Medicare plan. Do you have Medicare coverage?"},
+      {"ts":"2025-08-29T05:16:32.08458+05:00","event":"interrupt","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","node_id":"pitch","node_type":"question","node_content":"I'm calling to see if you currently have a Medicare plan. Do you have Medicare coverage?","text":"Stop calling me, please.","interrupt":"dnc"},
+      {"ts":"2025-08-29T05:16:32.186136+05:00","event":"node_start","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","node_id":"dnc","node_type":"interrupt","node_content":"Caller requested to be removed from the call list"},
+      {"ts":"2025-08-29T05:16:35.611567+05:00","event":"api_call","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","details":{"endpoint":"/add_to_dnc","status":"error"}},
+      {"ts":"2025-08-29T05:16:35.611944+05:00","event":"node_start","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","node_id":"end_call","node_type":"hangup","node_content":"Call ended"},
+      {"ts":"2025-08-29T05:16:38.357714+05:00","event":"api_call","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","details":{"endpoint":"/end_call","status":"error"}},
+      {"ts":"2025-08-29T05:16:38.359376+05:00","event":"hangup","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589"},
+      {"ts":"2025-08-29T05:16:38.359477+05:00","event":"flow_end","session_id":"3fa3f9ba-64f2-4462-8cd3-e31c53ec5589","details":{"reason":"hangup"}}
+    ];
+    $('#inputArea').value = sample.map(o=>JSON.stringify(o)).join('\n');
+  }
+
+  function handleInput(text){
+    const { events, errs } = parseLines(text);
+    buildModel(events);
+    renderSummary();
+    renderTimeline();
+    renderGraph();
+    const status = errs.length? `Parsed ${events.length} lines with ${errs.length} errors (see console)` : `Parsed ${events.length} lines`;
+    $('#status').textContent = status;
+    if (errs.length) console.warn('Parse errors:', errs);
+  }
+
+  // file input
+  $('#fileInput').addEventListener('change', async (e)=>{
+    const f = e.target.files?.[0]; if (!f) return;
+    const text = await f.text();
+    $('#inputArea').value = text;
+    handleInput(text);
+  });
+
+  // paste/parse
+  $('#parseBtn').addEventListener('click', ()=> handleInput($('#inputArea').value));
+  $('#demoBtn').addEventListener('click', ()=> { loadDemo(); handleInput($('#inputArea').value); });
+  $('#clearBtn').addEventListener('click', ()=> { $('#inputArea').value=''; $('#status').textContent=''; $('#summaryKV').innerHTML=''; $('#statsPills').innerHTML=''; $('#graph').innerHTML=''; $('#timeline tbody').innerHTML=''; });
+
+  // drag-drop
+  const dz = $('#dropzone');
+  ;['dragenter','dragover'].forEach(evt=> dz.addEventListener(evt, (e)=>{ e.preventDefault(); e.stopPropagation(); dz.style.background='#0f1725'; }));
+  ;['dragleave','drop'].forEach(evt=> dz.addEventListener(evt, (e)=>{ e.preventDefault(); e.stopPropagation(); dz.style.background=''; }));
+  dz.addEventListener('drop', async (e)=>{
+    const f = e.dataTransfer.files?.[0]; if(!f) return; const text = await f.text(); $('#inputArea').value = text; handleInput(text);
+  });
+
+  // auto-fill demo on first load for convenience
+  loadDemo();
+  </script>
+</body>
+</html>

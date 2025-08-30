@@ -11,7 +11,23 @@ transcription:
   output_dir: "./transcripts"
   save_transcripts: true
   save_audio: true
+  save_session_logs: true
 
 assemblyai:
   api_key: "590fa22d4e11403fa681db14eac44042"
   sample_rate: 8000
+
+vicidial:
+  server_url: "http://vicidial.example.com"
+  admin_dir: "vicidial"
+  api_user: "apiuser"
+  api_pass: "apipass"
+  source_ra: "igent"
+  source_admin: "test"
+  transfer_status: "TRSFR"
+  transfer_phone: "26000"
+
+redis:
+  addr: "localhost:6379"
+  db: 0
+  prefix: ""  # keep empty to use bare UUID as key

@@ -1,115 +1,194 @@
 package flow
 
 import (
-	"fmt"
-	"net/http"
-	"net/url"
-	"time"
+    "context"
+    "fmt"
+    "net/http"
+    "net/url"
+    "path"
+    "strings"
+    "time"
+
+    redis "github.com/redis/go-redis/v9"
 )
 
-// APIClient handles HTTP requests to external services
+// APIClient implements Vicidial-related API calls
 type APIClient struct {
-	baseURL    string
-	httpClient *http.Client
+    serverURL   string
+    adminDir    string
+    apiUser     string
+    apiPass     string
+    sourceRA    string // e.g., "igent"
+    sourceAdmin string // e.g., "test" or "igent"
+
+    transferStatus     string // e.g., "LVXFER"
+    transferPhone      string // e.g., "26000"
+
+    httpClient *http.Client
+
+    // Redis for session-scoped variables
+    redis       *redis.Client
+    redisPrefix string
 }
 
-// NewAPIClient creates a new API client
-func NewAPIClient(baseURL string) *APIClient {
-	return &APIClient{
-		baseURL: baseURL,
-		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
-		},
-	}
+// NewVicidialClient constructs a fully configured API client
+func NewVicidialClient(serverURL, adminDir, apiUser, apiPass, sourceRA, sourceAdmin, transferStatus, transferPhone string) *APIClient {
+    return &APIClient{
+        serverURL:   strings.TrimRight(serverURL, "/"),
+        adminDir:    strings.Trim(adminDir, "/"),
+        apiUser:     apiUser,
+        apiPass:     apiPass,
+        sourceRA:    sourceRA,
+        sourceAdmin: sourceAdmin,
+        transferStatus: transferStatus,
+        transferPhone:  transferPhone,
+        httpClient: &http.Client{Timeout: 10 * time.Second},
+    }
 }
 
-// MakeRequest makes an HTTP GET request with query parameters
-func (api *APIClient) MakeRequest(endpoint string, params map[string]string) error {
-	// Build URL with query parameters
-	u, err := url.Parse(api.baseURL + endpoint)
-	if err != nil {
-		return fmt.Errorf("failed to parse URL: %w", err)
-	}
-	
-	// Add query parameters
-	q := u.Query()
-	for key, value := range params {
-		q.Add(key, value)
-	}
-	u.RawQuery = q.Encode()
-	
-	// Make request
-	resp, err := api.httpClient.Get(u.String())
-	if err != nil {
-		return fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-	
-	// Check response status
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API request failed with status: %d", resp.StatusCode)
-	}
-	
-	return nil
+// SetRedis attaches a Redis client used to resolve session variables
+func (api *APIClient) SetRedis(client *redis.Client, prefix string) {
+    api.redis = client
+    api.redisPrefix = prefix
 }
 
-// ReportCallStatus reports call status to the dialer
-func (api *APIClient) ReportCallStatus(sessionID, status, reason string) error {
-	params := map[string]string{
-		"session_id": sessionID,
-		"status":     status,
-		"reason":     reason,
-	}
-	
-	return api.MakeRequest("/call-status", params)
+func (api *APIClient) getVar(ctx context.Context, sessionID, key string) (string, error) {
+    if api.redis == nil {
+        return "", fmt.Errorf("redis client not configured")
+    }
+    redisKey := api.redisPrefix + sessionID
+    val, err := api.redis.HGet(ctx, redisKey, key).Result()
+    if err != nil || val == "" {
+        if err != nil {
+            return "", fmt.Errorf("redis HGET %s %s: %w", redisKey, key, err)
+        }
+        return "", fmt.Errorf("redis HGET %s %s: empty", redisKey, key)
+    }
+    return val, nil
 }
 
-// AddToDNC adds a number to the do-not-call list
-func (api *APIClient) AddToDNC(sessionID string) error {
-	params := map[string]string{
-		"session_id": sessionID,
-		"action":     "add_to_dnc",
-	}
-	
-	return api.MakeRequest("/add_to_dnc", params)
+// Convenience wrappers that resolve vars by session UUID
+func (api *APIClient) UpdateRaCallControlBySession(sessionID, stage, status, phone string) error {
+    ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+    defer cancel()
+    agentUser, err := api.getVar(ctx, sessionID, "agent_user")
+    if err != nil {
+        return err
+    }
+    display, err := api.getVar(ctx, sessionID, "display")
+    if err != nil {
+        return err
+    }
+    return api.UpdateRaCallControl(agentUser, stage, status, display, phone)
 }
 
-// MarkNotInterested marks a call as not interested
-func (api *APIClient) MarkNotInterested(sessionID string) error {
-	params := map[string]string{
-		"session_id": sessionID,
-		"action":     "mark_not_interested",
-	}
-	
-	return api.MakeRequest("/mark_not_interested", params)
+func (api *APIClient) UpdateLeadStatusBySession(sessionID, status string) error {
+    ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+    defer cancel()
+    leadID, err := api.getVar(ctx, sessionID, "lead_id")
+    if err != nil {
+        return err
+    }
+    return api.UpdateLeadStatus(leadID, status)
 }
 
-// ScheduleCallback schedules a callback for later
-func (api *APIClient) ScheduleCallback(sessionID string) error {
-	params := map[string]string{
-		"session_id": sessionID,
-		"action":     "schedule_callback",
-	}
-	
-	return api.MakeRequest("/schedule_callback", params)
+func (api *APIClient) UpdateLogEntryBySession(sessionID, status string) error {
+    ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+    defer cancel()
+    campaignID, err := api.getVar(ctx, sessionID, "campaign_id")
+    if err != nil {
+        return err
+    }
+    callID, err := api.getVar(ctx, sessionID, "display")
+    if err != nil {
+        return err
+    }
+    return api.UpdateLogEntry(campaignID, callID, status)
 }
 
-// TransferCall initiates a call transfer
-func (api *APIClient) TransferCall(sessionID string) error {
-	params := map[string]string{
-		"session_id": sessionID,
-		"action":     "transfer_call",
-	}
-	
-	return api.MakeRequest("/transfer_call", params)
+// SetVicidialConfig updates client configuration
+func (api *APIClient) SetVicidialConfig(serverURL, adminDir, apiUser, apiPass, sourceRA, sourceAdmin, transferStatus, transferPhone string) {
+    api.serverURL = strings.TrimRight(serverURL, "/")
+    api.adminDir = strings.Trim(adminDir, "/")
+    api.apiUser = apiUser
+    api.apiPass = apiPass
+    api.sourceRA = sourceRA
+    api.sourceAdmin = sourceAdmin
+    api.transferStatus = transferStatus
+    api.transferPhone = transferPhone
 }
 
-// EndCall ends the call
-func (api *APIClient) EndCall(sessionID string) error {
-	params := map[string]string{
-		"session_id": sessionID,
-		"action":     "end_call",
-	}
-	
-	return api.MakeRequest("/end_call", params)
+// makeRequest performs a GET request to a full URL with params
+func (api *APIClient) makeRequest(fullURL string, params map[string]string) error {
+    u, err := url.Parse(fullURL)
+    if err != nil {
+        return fmt.Errorf("failed to parse URL: %w", err)
+    }
+    q := u.Query()
+    for k, v := range params {
+        q.Set(k, v)
+    }
+    u.RawQuery = q.Encode()
+
+    resp, err := api.httpClient.Get(u.String())
+    if err != nil {
+        return fmt.Errorf("request failed: %w", err)
+    }
+    defer resp.Body.Close()
+    if resp.StatusCode != http.StatusOK {
+        return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+    }
+    return nil
 }
+
+// UpdateRaCallControl -> {SERVER_URL}/agc/api.php
+func (api *APIClient) UpdateRaCallControl(agentUser, stage, status, display string, phoneNumber string) error {
+    fullURL := api.serverURL + "/agc/api.php"
+    params := map[string]string{
+        "source":    api.sourceRA,
+        "user":      api.apiUser,
+        "pass":      api.apiPass,
+        "agent_user": agentUser,
+        "function":  "ra_call_control",
+        "stage":     stage,
+        "status":    status,
+        "value":     display,
+    }
+    if phoneNumber != "" {
+        params["phone_number"] = phoneNumber
+    }
+    return api.makeRequest(fullURL, params)
+}
+
+// UpdateLeadStatus -> {SERVER_URL}/{ADMIN_DIR}/non_agent_api.php
+func (api *APIClient) UpdateLeadStatus(leadID, status string) error {
+    fullURL := api.serverURL + "/" + path.Join(api.adminDir, "non_agent_api.php")
+    params := map[string]string{
+        "source":   api.sourceAdmin,
+        "user":     api.apiUser,
+        "pass":     api.apiPass,
+        "function": "update_lead",
+        "lead_id":  leadID,
+        "status":   status,
+    }
+    return api.makeRequest(fullURL, params)
+}
+
+// UpdateLogEntry -> {SERVER_URL}/{ADMIN_DIR}/non_agent_api.php
+func (api *APIClient) UpdateLogEntry(campaignID, callID, status string) error {
+    fullURL := api.serverURL + "/" + path.Join(api.adminDir, "non_agent_api.php")
+    params := map[string]string{
+        "source":   api.sourceRA,
+        "user":     api.apiUser,
+        "pass":     api.apiPass,
+        "function": "update_log_entry",
+        "group":    campaignID,
+        "call_id":  callID,
+        "status":   status,
+    }
+    return api.makeRequest(fullURL, params)
+}
+
+// Helpers to expose configured transfer params
+func (api *APIClient) TransferStatus() string { return api.transferStatus }
+func (api *APIClient) TransferPhone() string  { return api.transferPhone }

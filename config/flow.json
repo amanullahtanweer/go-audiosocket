@@ -15,6 +15,23 @@
       }
     },
     {
+      "id": "amd",
+      "type": "hangup",
+      "content": "Answering machine detected",
+      "audio_file": "",
+      "actions": [
+        {
+          "type": "api_call",
+          "endpoint": "/end_call",
+          "method": "GET"
+        },
+        {
+          "type": "log",
+          "message": "AMD detected - ending call"
+        }
+      ]
+    },
+    {
       "id": "greeting",
       "type": "question",
       "content": "Start of call",

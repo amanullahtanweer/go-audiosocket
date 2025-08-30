@@ -1,20 +1,22 @@
 package server
 
 import (
-	"fmt"
-	"io"
-	"log"
-	"net"
-	"os"
-	"path/filepath"
-	"sync"
-	"time"
+    "context"
+    "fmt"
+    "io"
+    "log"
+    "net"
+    "os"
+    "path/filepath"
+    "sync"
+    "time"
 
-	"github.com/CyCoreSystems/audiosocket"
-	"github.com/amanullahtanweer/audiosocket-transcriber/internal/audio"
-	"github.com/amanullahtanweer/audiosocket-transcriber/internal/flow"
-	"github.com/amanullahtanweer/audiosocket-transcriber/internal/transcriber"
-	"github.com/google/uuid"
+    "github.com/CyCoreSystems/audiosocket"
+    "github.com/amanullahtanweer/audiosocket-transcriber/internal/audio"
+    "github.com/amanullahtanweer/audiosocket-transcriber/internal/flow"
+    "github.com/amanullahtanweer/audiosocket-transcriber/internal/transcriber"
+    "github.com/google/uuid"
+    redis "github.com/redis/go-redis/v9"
 )
 
 type Config struct {
@@ -28,6 +30,21 @@ type Config struct {
     SaveTranscripts bool
     SaveAudio       bool
     AudioDir        string // Directory containing audio files
+    SaveSessionLogs bool   // Save structured session logs
+    // Vicidial API
+    VicidialServerURL   string
+    VicidialAdminDir    string
+    VicidialAPIUser     string
+    VicidialAPIPass     string
+    VicidialSourceRA    string
+    VicidialSourceAdmin string
+    TransferStatus      string // e.g., LVXFER
+    TransferPhone       string // e.g., 26000
+
+    // Redis (defaults suitable for localhost)
+    RedisAddr   string // e.g., "localhost:6379"
+    RedisDB     int    // default 0
+    RedisPrefix string // optional prefix; default empty means bare UUID key
 }
 
 type Server struct {
@@ -36,6 +53,7 @@ type Server struct {
     wg         sync.WaitGroup
     shutdown   chan struct{}
     audioPlayer *audio.Player
+    redis      *redis.Client
 }
 
 type Session struct {
@@ -49,11 +67,12 @@ type Session struct {
     patternMatcher *audio.PatternMatcher // Handles pattern-based interrupt detection
     flowEngine  *flow.FlowEngine // Handles call flow execution
     stopAudioChan chan struct{} // Channel to stop current audio playback
+    vars       map[string]string // session-scoped variables (placeholder for Redis)
 }
 
 func New(config Config) (*Server, error) {
     // Create output directory if needed
-    if (config.SaveTranscripts || config.SaveAudio) && config.OutputDir != "" {
+    if (config.SaveTranscripts || config.SaveAudio || config.SaveSessionLogs) && config.OutputDir != "" {
         if err := os.MkdirAll(config.OutputDir, 0755); err != nil {
             return nil, fmt.Errorf("failed to create output directory: %w", err)
         }
@@ -69,11 +88,27 @@ func New(config Config) (*Server, error) {
         }
     }
 
-    return &Server{
+    srv := &Server{
         config:     config,
         shutdown:   make(chan struct{}),
         audioPlayer: audioPlayer,
-    }, nil
+    }
+
+    // Initialize Redis client (assume localhost if unset)
+    addr := config.RedisAddr
+    if addr == "" {
+        addr = "localhost:6379"
+    }
+    srv.redis = redis.NewClient(&redis.Options{Addr: addr, DB: config.RedisDB})
+    ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+    defer cancel()
+    if err := srv.redis.Ping(ctx).Err(); err != nil {
+        log.Printf("Warning: Redis not reachable at %s (db=%d): %v", addr, config.RedisDB, err)
+    } else {
+        log.Printf("Connected to Redis at %s (db=%d)", addr, config.RedisDB)
+    }
+
+    return srv, nil
 }
 
 func (s *Server) Start() error {
@@ -165,6 +200,7 @@ func (s *Server) handleConnection(conn net.Conn) {
         startTime:   time.Now(),
         stopAmbient: make(chan struct{}),
         stopAudioChan: make(chan struct{}),
+        vars:       make(map[string]string),
     }
 
     // Initialize pattern matcher if audio player is available
@@ -183,6 +219,28 @@ func (s *Server) handleConnection(conn net.Conn) {
             log.Printf("Session %s: Failed to initialize flow engine: %v", id, err)
         } else {
             log.Printf("Session %s: Flow engine initialized", id)
+            // Attach session logger if enabled
+            if s.config.SaveSessionLogs {
+                logger, err := flow.NewSessionLogger(s.config.OutputDir, id.String(), session.startTime)
+                if err != nil {
+                    log.Printf("Session %s: Failed to create session logger: %v", id, err)
+                } else {
+                    session.flowEngine.SetSessionLogger(logger)
+                }
+            }
+            // Configure Vicidial API client
+            apiClient := flow.NewVicidialClient(
+                s.config.VicidialServerURL,
+                s.config.VicidialAdminDir,
+                s.config.VicidialAPIUser,
+                s.config.VicidialAPIPass,
+                s.config.VicidialSourceRA,
+                s.config.VicidialSourceAdmin,
+                s.config.TransferStatus,
+                s.config.TransferPhone,
+            )
+            apiClient.SetRedis(s.redis, s.config.RedisPrefix)
+            session.flowEngine.SetAPIClient(apiClient)
         }
     }
 
@@ -223,6 +281,51 @@ func (s *Server) handleConnection(conn net.Conn) {
         // Check if it's a hangup message
         if msg.Kind() == audiosocket.KindHangup {
             log.Printf("Session %s: Received hangup", id)
+            // If the caller hung up (custom/non-flow), post DC updates
+            if session.flowEngine != nil {
+                apiClient := flow.NewVicidialClient(
+                    s.config.VicidialServerURL,
+                    s.config.VicidialAdminDir,
+                    s.config.VicidialAPIUser,
+                    s.config.VicidialAPIPass,
+                    s.config.VicidialSourceRA,
+                    s.config.VicidialSourceAdmin,
+                    s.config.TransferStatus,
+                    s.config.TransferPhone,
+                )
+                // Attach Redis for var resolution
+                apiClient.SetRedis(s.redis, s.config.RedisPrefix)
+                // Determine final status: prefer flow-derived reason; skip DC if transferred
+                status := "DC"
+                if session.flowEngine.WasTransferred() {
+                    // Transfer already reported; do not send DC or override
+                    log.Printf("Session %s: Skipping DC due to prior transfer", id)
+                } else if lr := session.flowEngine.GetLastReason(); lr != "" {
+                    status = lr
+                }
+                if status != "DC" {
+                    if err := apiClient.UpdateRaCallControlBySession(id.String(), "HANGUP", status, ""); err != nil {
+                        log.Printf("Session %s: ra_call_control(HANGUP,%s) failed: %v", id, status, err)
+                    }
+                    if err := apiClient.UpdateLeadStatusBySession(id.String(), status); err != nil {
+                        log.Printf("Session %s: update_lead_status(%s) failed: %v", id, status, err)
+                    }
+                    if err := apiClient.UpdateLogEntryBySession(id.String(), status); err != nil {
+                        log.Printf("Session %s: update_log_entry(%s) failed: %v", id, status, err)
+                    }
+                } else {
+                    // No final status known; proceed with DC as last resort
+                    if err := apiClient.UpdateRaCallControlBySession(id.String(), "HANGUP", "DC", ""); err != nil {
+                        log.Printf("Session %s: ra_call_control(HANGUP,DC) failed: %v", id, err)
+                    }
+                    if err := apiClient.UpdateLeadStatusBySession(id.String(), "DC"); err != nil {
+                        log.Printf("Session %s: update_lead_status failed: %v", id, err)
+                    }
+                    if err := apiClient.UpdateLogEntryBySession(id.String(), "DC"); err != nil {
+                        log.Printf("Session %s: update_log_entry failed: %v", id, err)
+                    }
+                }
+            }
             break
         }
     }
@@ -273,32 +376,51 @@ func (session *Session) GetTranscriptionResults() <-chan flow.TranscriptionResul
 }
 
 func (session *Session) ReportStatus(status, reason string) error {
-	// This will be implemented when you're ready for API calls
-	log.Printf("Session %s: Status report - %s: %s", session.id, status, reason)
-	return nil
+    // This will be implemented when you're ready for API calls
+    log.Printf("Session %s: Status report - %s: %s", session.id, status, reason)
+    return nil
+}
+
+// GetVar returns a dynamic variable (later backed by Redis). Key examples: agent_user, display, lead_id, campaign_id
+func (session *Session) GetVar(key string) (string, bool) {
+    // Fetch from Redis HGET <prefix+UUID> <field>
+    if session.server != nil && session.server.redis != nil {
+        ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+        defer cancel()
+        redisKey := session.server.config.RedisPrefix + session.id.String()
+        val, err := session.server.redis.HGet(ctx, redisKey, key).Result()
+        if err == nil && val != "" {
+            return val, true
+        }
+    }
+    // Fallback to in-memory override if present
+    v, ok := session.vars[key]
+    return v, ok
 }
 
 func (session *Session) CheckForInterrupt(text string) (string, bool) {
-	if session.patternMatcher != nil {
-		if interruptRule := session.patternMatcher.DetectInterrupt(text); interruptRule != nil {
-			// Return the interrupt key (e.g., "dnc") not the name ("Do Not Call")
-			// We need to map the name back to the key
-			switch interruptRule.Name {
-			case "Do Not Call":
-				return "dnc", true
-			case "Not Interested":
-				return "not_interested", true
-			case "Robot Detection":
-				return "robot", true
-			case "Callback Request":
-				return "callback", true
-			default:
-				// Try to find by name in the config
-				return "dnc", true // Fallback to DNC
-			}
-		}
-	}
-	return "", false
+    if session.patternMatcher != nil {
+        if interruptRule := session.patternMatcher.DetectInterrupt(text); interruptRule != nil {
+            // Return the interrupt key (e.g., "dnc") not the name ("Do Not Call")
+            // We need to map the name back to the key
+            switch interruptRule.Name {
+            case "Do Not Call":
+                return "dnc", true
+            case "Not Interested":
+                return "not_interested", true
+            case "Robot Detection":
+                return "robot", true
+            case "Callback Request":
+                return "callback", true
+            case "Answering Machine":
+                return "amd", true
+            default:
+                // Try to find by name in the config
+                return "dnc", true // Fallback to DNC
+            }
+        }
+    }
+    return "", false
 }
 
 func (session *Session) EndCall() error {
@@ -453,5 +575,10 @@ func (session *Session) finalize() {
                 audioFilename, 
                 float64(len(session.audioBuffer))/(float64(session.server.config.SampleRate)*2))
         }
+    }
+
+    // Ensure flow logger is closed
+    if session.flowEngine != nil {
+        session.flowEngine.Close()
     }
 }

@@ -10,14 +10,17 @@ import (
 
 // FlowEngine manages the call flow execution
 type FlowEngine struct {
-	session     Session
-	currentNode *FlowNode
-	config      *FlowConfig
-	timer       *GlobalTimer
-	isActive    bool
-	classifier  *ResponseClassifier
-	waitingFor  *FlowNode // Node we're currently waiting for response on
-	apiClient   *APIClient
+    session     Session
+    currentNode *FlowNode
+    config      *FlowConfig
+    timer       *GlobalTimer
+    isActive    bool
+    classifier  *ResponseClassifier
+    waitingFor  *FlowNode // Node we're currently waiting for response on
+    apiClient   *APIClient
+    logger      *SessionLogger
+    lastReason  string // tracks last flow reason for hangup reporting
+    transferred bool   // track if transfer occurred to avoid DC fallback
 }
 
 // FlowNode represents a single step in the flow
@@ -56,14 +59,14 @@ type FlowMetadata struct {
 
 // Session interface for flow engine to interact with server session
 type Session interface {
-	GetID() string
-	PlayAudio(filename string) error
-	StopAudio() error // Stops current audio playback
-	StopTranscription()
-	GetTranscriptionResults() <-chan TranscriptionResult
-	ReportStatus(status, reason string) error
-	CheckForInterrupt(text string) (string, bool) // Returns interrupt type and whether found
-	EndCall() error                               // Ends the call by sending hangup command
+    GetID() string
+    PlayAudio(filename string) error
+    StopAudio() error // Stops current audio playback
+    StopTranscription()
+    GetTranscriptionResults() <-chan TranscriptionResult
+    ReportStatus(status, reason string) error
+    CheckForInterrupt(text string) (string, bool) // Returns interrupt type and whether found
+    EndCall() error                               // Ends the call by sending hangup command
 }
 
 // TranscriptionResult represents a transcription result
@@ -88,18 +91,29 @@ func NewFlowEngine(session Session, configPath string) (*FlowEngine, error) {
 	classifier := NewResponseClassifier()
 
 	// Create API client (baseURL will be configured later)
-	apiClient := NewAPIClient("")
+    // Placeholder; server will configure vicidial client via SetAPIClient
+    apiClient := NewVicidialClient("", "", "", "", "igent", "test", "", "")
 
-	engine := &FlowEngine{
-		session:    session,
-		config:     config,
-		timer:      timer,
-		isActive:   false,
-		classifier: classifier,
-		apiClient:  apiClient,
-	}
+    engine := &FlowEngine{
+        session:    session,
+        config:     config,
+        timer:      timer,
+        isActive:   false,
+        classifier: classifier,
+        apiClient:  apiClient,
+    }
 
 	return engine, nil
+}
+
+// SetSessionLogger provides a logger to persist structured session events
+func (fe *FlowEngine) SetSessionLogger(logger *SessionLogger) {
+    fe.logger = logger
+}
+
+// SetAPIClient lets server provide a configured Vicidial client
+func (fe *FlowEngine) SetAPIClient(client *APIClient) {
+    fe.apiClient = client
 }
 
 // loadFlowConfig loads flow configuration from JSON file
@@ -119,7 +133,7 @@ func loadFlowConfig(configPath string) (*FlowConfig, error) {
 
 // Start begins the flow execution
 func (fe *FlowEngine) Start() error {
-	fe.isActive = true
+    fe.isActive = true
 
 	// Find start node
 	startNode := fe.findNode("start")
@@ -127,8 +141,13 @@ func (fe *FlowEngine) Start() error {
 		return fmt.Errorf("start node not found in flow configuration")
 	}
 
-	fe.currentNode = startNode
-	log.Printf("Flow started for session %s", fe.session.GetID())
+    fe.currentNode = startNode
+    log.Printf("Flow started for session %s", fe.session.GetID())
+
+    // Structured log
+    if fe.logger != nil {
+        fe.logger.LogFlowStart(fe.session.GetID(), fe.config.Metadata.Name, fe.config.Metadata.Version, time.Now())
+    }
 
 	// Execute start node
 	return fe.executeNode(startNode)
@@ -146,7 +165,11 @@ func (fe *FlowEngine) findNode(id string) *FlowNode {
 
 // executeNode executes a single flow node
 func (fe *FlowEngine) executeNode(node *FlowNode) error {
-	log.Printf("Executing node: %s (type: %s)", node.ID, node.Type)
+    log.Printf("Executing node: %s (type: %s)", node.ID, node.Type)
+
+    if fe.logger != nil {
+        fe.logger.LogNodeStart(fe.session.GetID(), node)
+    }
 
 	switch node.Type {
 	case "audio":
@@ -192,7 +215,7 @@ func (fe *FlowEngine) handleAudioNode(node *FlowNode) error {
 
 // handleQuestionNode handles question nodes (wait for response)
 func (fe *FlowEngine) handleQuestionNode(node *FlowNode) error {
-	log.Printf("Playing question audio: %s - %s", node.AudioFile, node.Content)
+    log.Printf("Playing question audio: %s - %s", node.AudioFile, node.Content)
 
 	// Play audio in background (non-blocking)
 	go func() {
@@ -234,19 +257,40 @@ func (fe *FlowEngine) waitForResponse(node *FlowNode) {
 			}
 
 			// Final transcript - check for interrupts first
-			if interruptType, found := fe.session.CheckForInterrupt(result.Text); found {
-				log.Printf("Q&A INTERRUPT - Question: %s | Answer: %s | Interrupt: %s | Node: %s",
-					node.Content, result.Text, interruptType, node.ID)
-				fe.HandleInterrupt(interruptType)
-				return
-			}
+            if interruptType, found := fe.session.CheckForInterrupt(result.Text); found {
+                log.Printf("Q&A INTERRUPT - Question: %s | Answer: %s | Interrupt: %s | Node: %s",
+                    node.Content, result.Text, interruptType, node.ID)
+                // Map interrupt to hangup reason codes used by Vicidial
+                switch interruptType {
+                case "dnc":
+                    fe.lastReason = "DNC"
+                case "not_interested":
+                    fe.lastReason = "NI"
+                case "robot":
+                    fe.lastReason = "DNQ"
+                case "amd":
+                    fe.lastReason = "A"
+                case "callback":
+                    fe.lastReason = "CALLBK"
+                default:
+                    fe.lastReason = "DNQ"
+                }
+                if fe.logger != nil {
+                    fe.logger.LogInterrupt(fe.session.GetID(), node, result.Text, interruptType)
+                }
+                fe.HandleInterrupt(interruptType)
+                return
+            }
 
 			// No interrupt - classify response
 			responseType := fe.classifier.ClassifyResponse(result.Text)
 
 			// Log Question & Answer for training/inspection
-			log.Printf("Q&A LOG - Question: %s | Answer: %s | Classification: %s | Node: %s",
-				node.Content, result.Text, responseType, node.ID)
+            log.Printf("Q&A LOG - Question: %s | Answer: %s | Classification: %s | Node: %s",
+                node.Content, result.Text, responseType, node.ID)
+            if fe.logger != nil {
+                fe.logger.LogQnA(fe.session.GetID(), node, result.Text, string(responseType))
+            }
 
 			// Find next node based on response type
 			nextNodeID := node.Transitions[string(responseType)]
@@ -255,11 +299,21 @@ func (fe *FlowEngine) waitForResponse(node *FlowNode) {
 				nextNodeID = node.Transitions["default"]
 			}
 
-			if nextNodeID != "" {
-				nextNode := fe.findNode(nextNodeID)
-				if nextNode != nil {
-					log.Printf("Flow transition: %s (%s) -> %s (%s) | Response: %s",
-						node.ID, node.Content, nextNode.ID, nextNode.Content, responseType)
+            if nextNodeID != "" {
+                nextNode := fe.findNode(nextNodeID)
+                if nextNode != nil {
+                    log.Printf("Flow transition: %s (%s) -> %s (%s) | Response: %s",
+                        node.ID, node.Content, nextNode.ID, nextNode.Content, responseType)
+                    if fe.logger != nil {
+                        fe.logger.LogTransition(fe.session.GetID(), node, nextNode, string(responseType))
+                    }
+                    // Track reason based on classification for later hangup reporting if not interrupted
+                    switch string(responseType) {
+                    case "negative":
+                        fe.lastReason = "NI"
+                    case "unknown":
+                        // leave as-is
+                    }
 
 					// Stop current audio completely before transitioning
 					if fe.waitingFor != nil {
@@ -279,14 +333,17 @@ func (fe *FlowEngine) waitForResponse(node *FlowNode) {
 				}
 			}
 
-		case <-fe.timer.GetTimeoutChan():
-			// Timer expired - handle timeout
-			log.Printf("Q&A TIMEOUT - Question: %s | Answer: [TIMEOUT] | Classification: [TIMEOUT] | Node: %s",
-				node.Content, node.ID)
-			fe.handleTimeout()
-			return
-		}
-	}
+        case <-fe.timer.GetTimeoutChan():
+            // Timer expired - handle timeout
+            log.Printf("Q&A TIMEOUT - Question: %s | Answer: [TIMEOUT] | Classification: [TIMEOUT] | Node: %s",
+                node.Content, node.ID)
+            if fe.logger != nil {
+                fe.logger.LogTimeout(fe.session.GetID(), node)
+            }
+            fe.handleTimeout()
+            return
+        }
+    }
 }
 
 // handleTimeout handles timeout events
@@ -320,7 +377,7 @@ func (fe *FlowEngine) handleTimeout() {
 
 // HandleInterrupt handles interrupt events from pattern matcher
 func (fe *FlowEngine) HandleInterrupt(interruptType string) {
-	log.Printf("Handling interrupt: %s", interruptType)
+    log.Printf("Handling interrupt: %s", interruptType)
 
 	// Stop timer if active
 	if fe.timer.IsActive() {
@@ -353,51 +410,87 @@ func (fe *FlowEngine) handleTransferNode(node *FlowNode) error {
 		return fmt.Errorf("failed to play audio: %w", err)
 	}
 
-	// Stop transcription (AssemblyAI)
-	fe.session.StopTranscription()
+    // Stop transcription (AssemblyAI)
+    fe.session.StopTranscription()
 
-	// Execute actions
-	if err := fe.executeActions(node.Actions); err != nil {
-		log.Printf("Warning: failed to execute transfer actions: %v", err)
-	}
+    // Execute actions
+    if err := fe.executeActions(node.Actions); err != nil {
+        log.Printf("Warning: failed to execute transfer actions: %v", err)
+    }
 
-	// Flow ends here (call continues but flow is done)
-	fe.isActive = false
-	log.Printf("Transfer completed, flow ended for session %s", fe.session.GetID())
+    // Vicidial: ra_call_control for transfer (resolved by session ID)
+    if fe.apiClient != nil {
+        status := fe.apiClient.TransferStatus()
+        phone := fe.apiClient.TransferPhone()
+        if err := fe.apiClient.UpdateRaCallControlBySession(fe.session.GetID(), "EXTENSIONTRANSFER", status, phone); err != nil {
+            log.Printf("Warning: transfer ra_call_control failed: %v", err)
+        }
+    }
+
+    // Mark as transferred so raw hangup does not post DC later
+    fe.transferred = true
+
+    // Flow ends here (call continues but flow is done)
+    fe.isActive = false
+    log.Printf("Transfer completed, flow ended for session %s", fe.session.GetID())
+    if fe.logger != nil {
+        fe.logger.LogFlowEnd(fe.session.GetID(), time.Now(), "transfer")
+        _ = fe.logger.Close()
+    }
 
 	return nil
 }
 
 // handleHangupNode handles hangup nodes
 func (fe *FlowEngine) handleHangupNode(node *FlowNode) error {
-	// Play hangup audio
-	if err := fe.session.PlayAudio(node.AudioFile); err != nil {
-		return fmt.Errorf("failed to play audio: %w", err)
-	}
+    // Play hangup audio (if specified)
+    if node.AudioFile != "" {
+        if err := fe.session.PlayAudio(node.AudioFile); err != nil {
+            return fmt.Errorf("failed to play audio: %w", err)
+        }
+    }
 
-	// Execute actions
-	if err := fe.executeActions(node.Actions); err != nil {
-		log.Printf("Warning: failed to execute hangup actions: %v", err)
-	}
+    // Execute actions
+    if err := fe.executeActions(node.Actions); err != nil {
+        log.Printf("Warning: failed to execute hangup actions: %v", err)
+    }
 
-	// Send hangup command to end the call
-	if err := fe.session.EndCall(); err != nil {
-		log.Printf("Warning: failed to send hangup command: %v", err)
-	}
+    // Vicidial: ra_call_control for hangup with flow reason
+    if fe.apiClient != nil && !hasEndCallAction(node.Actions) {
+        status := fe.lastReason
+        if status == "" {
+            status = "DC"
+        }
+        if err := fe.apiClient.UpdateRaCallControlBySession(fe.session.GetID(), "HANGUP", status, ""); err != nil {
+            log.Printf("Warning: hangup ra_call_control failed: %v", err)
+        }
+    }
 
-	// Flow ends here
-	fe.isActive = false
-	log.Printf("Hangup completed, flow ended for session %s", fe.session.GetID())
+    // Send hangup command to end the call
+    if err := fe.session.EndCall(); err != nil {
+        log.Printf("Warning: failed to send hangup command: %v", err)
+    }
 
-	return nil
+    // Flow ends here
+    fe.isActive = false
+    log.Printf("Hangup completed, flow ended for session %s", fe.session.GetID())
+    if fe.logger != nil {
+        fe.logger.LogHangup(fe.session.GetID())
+        fe.logger.LogFlowEnd(fe.session.GetID(), time.Now(), "hangup")
+        _ = fe.logger.Close()
+    }
+
+    return nil
 }
 
 // handleInterruptNode handles interrupt nodes
 func (fe *FlowEngine) handleInterruptNode(node *FlowNode) error {
-	// Play interrupt audio
-	if err := fe.session.PlayAudio(node.AudioFile); err != nil {
-		return fmt.Errorf("failed to play audio: %w", err)
-	}
+    // Play interrupt audio (if specified)
+    if node.AudioFile != "" {
+        if err := fe.session.PlayAudio(node.AudioFile); err != nil {
+            return fmt.Errorf("failed to play audio: %w", err)
+        }
+    }
 
 	// Execute actions
 	if err := fe.executeActions(node.Actions); err != nil {
@@ -414,69 +507,107 @@ func (fe *FlowEngine) handleInterruptNode(node *FlowNode) error {
 		}
 	}
 
-	// Flow ends here
-	fe.isActive = false
-	log.Printf("Interrupt completed, flow ended for session %s", fe.session.GetID())
+    // Flow ends here
+    fe.isActive = false
+    log.Printf("Interrupt completed, flow ended for session %s", fe.session.GetID())
+    if fe.logger != nil {
+        fe.logger.LogFlowEnd(fe.session.GetID(), time.Now(), "interrupt")
+        _ = fe.logger.Close()
+    }
 
-	return nil
+    return nil
 }
 
 // executeActions executes all actions for a node
 func (fe *FlowEngine) executeActions(actions []Action) error {
-	for _, action := range actions {
-		switch action.Type {
-		case "api_call":
-			// Execute API call based on endpoint
-			if err := fe.executeAPICall(action); err != nil {
-				log.Printf("Warning: API call failed: %v", err)
-			} else {
-				log.Printf("API call successful: %s %s", action.Method, action.Endpoint)
-			}
-		case "log":
-			log.Printf("Log action: %s", action.Message)
-		case "transfer":
-			log.Printf("Transfer action: destination=%s, timeout=%d", action.Endpoint, action.Timeout)
-		default:
-			log.Printf("Unknown action type: %s", action.Type)
-		}
-	}
-	return nil
+    for _, action := range actions {
+        switch action.Type {
+        case "api_call":
+            // Execute API call based on endpoint
+            if err := fe.executeAPICall(action); err != nil {
+                log.Printf("Warning: API call failed: %v", err)
+                if fe.logger != nil {
+                    fe.logger.LogAPICall(fe.session.GetID(), action.Endpoint, "error")
+                }
+            } else {
+                log.Printf("API call successful: %s %s", action.Method, action.Endpoint)
+                if fe.logger != nil {
+                    fe.logger.LogAPICall(fe.session.GetID(), action.Endpoint, "ok")
+                }
+            }
+        case "log":
+            log.Printf("Log action: %s", action.Message)
+        case "transfer":
+            log.Printf("Transfer action: destination=%s, timeout=%d", action.Endpoint, action.Timeout)
+            if fe.logger != nil {
+                fe.logger.LogTransfer(fe.session.GetID(), action.Endpoint)
+            }
+        default:
+            log.Printf("Unknown action type: %s", action.Type)
+        }
+    }
+    return nil
 }
 
 // executeAPICall executes an API call action
 func (fe *FlowEngine) executeAPICall(action Action) error {
-	sessionID := fe.session.GetID()
-
-	switch action.Endpoint {
-	case "/add_to_dnc":
-		return fe.apiClient.AddToDNC(sessionID)
-	case "/mark_not_interested":
-		return fe.apiClient.MarkNotInterested(sessionID)
-	case "/schedule_callback":
-		return fe.apiClient.ScheduleCallback(sessionID)
-	case "/transfer_call":
-		return fe.apiClient.TransferCall(sessionID)
-	case "/end_call":
-		return fe.apiClient.EndCall(sessionID)
-	default:
-		// Generic API call
-		params := map[string]string{
-			"session_id": sessionID,
-		}
-		// Add any additional parameters from the action
-		for key, value := range action.Params {
-			params[key] = value
-		}
-		return fe.apiClient.MakeRequest(action.Endpoint, params)
-	}
+    if fe.apiClient == nil {
+        return fmt.Errorf("api client not configured")
+    }
+    // Map legacy endpoints from flow.json to Vicidial functions
+    switch action.Endpoint {
+    case "/add_to_dnc":
+        // Do not call Vicidial immediately; mark intent and defer to hangup
+        fe.lastReason = "DNC"
+        return nil
+    case "/mark_not_interested":
+        fe.lastReason = "NI"
+        return nil
+    case "/schedule_callback":
+        fe.lastReason = "CALLBK"
+        return nil
+    case "/transfer_call":
+        return fe.apiClient.UpdateRaCallControlBySession(fe.session.GetID(), "EXTENSIONTRANSFER", fe.apiClient.TransferStatus(), fe.apiClient.TransferPhone())
+    case "/end_call":
+        status := fe.lastReason
+        if status == "" {
+            status = "DC"
+        }
+        return fe.apiClient.UpdateRaCallControlBySession(fe.session.GetID(), "HANGUP", status, "")
+    default:
+        return fmt.Errorf("unknown action endpoint: %s", action.Endpoint)
+    }
 }
 
 // IsActive returns whether the flow is currently active
 func (fe *FlowEngine) IsActive() bool {
-	return fe.isActive
+    return fe.isActive
 }
 
 // GetCurrentNode returns the current node
 func (fe *FlowEngine) GetCurrentNode() *FlowNode {
-	return fe.currentNode
+    return fe.currentNode
+}
+
+// Close releases resources like the session logger
+func (fe *FlowEngine) Close() {
+    if fe.logger != nil {
+        _ = fe.logger.Close()
+    }
+}
+
+// GetLastReason returns the last determined final reason (e.g., A, NI, DNC, CALLBK)
+func (fe *FlowEngine) GetLastReason() string { return fe.lastReason }
+
+// WasTransferred indicates if a transfer has occurred in this flow
+func (fe *FlowEngine) WasTransferred() bool { return fe.transferred }
+
+// hasEndCallAction checks if actions include an explicit /end_call API call
+func hasEndCallAction(actions []Action) bool {
+    for _, a := range actions {
+        if a.Type == "api_call" && a.Endpoint == "/end_call" {
+            return true
+        }
+    }
+    return false
 }
