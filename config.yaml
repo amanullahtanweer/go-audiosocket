@@ -18,10 +18,10 @@ assemblyai:
   sample_rate: 8000
 
 vicidial:
-  server_url: "http://vicidial.example.com"
+  server_url: "http://kaam26.dialerhosting.com"
   admin_dir: "vicidial"
-  api_user: "apiuser"
-  api_pass: "apipass"
+  api_user: "6666"
+  api_pass: "hello123"
   source_ra: "igent"
   source_admin: "test"
   transfer_status: "TRSFR"

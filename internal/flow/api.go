@@ -30,6 +30,9 @@ type APIClient struct {
     // Redis for session-scoped variables
     redis       *redis.Client
     redisPrefix string
+
+    // Optional session logger for structured api_call events
+    logger *SessionLogger
 }
 
 // NewVicidialClient constructs a fully configured API client
@@ -51,6 +54,11 @@ func NewVicidialClient(serverURL, adminDir, apiUser, apiPass, sourceRA, sourceAd
 func (api *APIClient) SetRedis(client *redis.Client, prefix string) {
     api.redis = client
     api.redisPrefix = prefix
+}
+
+// SetLogger attaches a session logger for emitting api_call events
+func (api *APIClient) SetLogger(logger *SessionLogger) {
+    api.logger = logger
 }
 
 func (api *APIClient) getVar(ctx context.Context, sessionID, key string) (string, error) {
@@ -78,6 +86,9 @@ func (api *APIClient) UpdateRaCallControlBySession(sessionID, stage, status, pho
         return err
     }
     agentUser, err := api.GetAgentUserByLead(leadID)
+    if api.logger != nil {
+        api.logger.LogAPICall(sessionID, "vicidial:lead_field_info", map[bool]string{true: "ok", false: "error"}[err == nil])
+    }
     if err != nil {
         // If unavailable, proceed with empty agent user
         agentUser = ""
@@ -86,7 +97,11 @@ func (api *APIClient) UpdateRaCallControlBySession(sessionID, stage, status, pho
     if err != nil {
         return err
     }
-    return api.UpdateRaCallControl(agentUser, stage, status, display, phone)
+    err = api.UpdateRaCallControl(agentUser, stage, status, display, phone)
+    if api.logger != nil {
+        api.logger.LogAPICall(sessionID, "vicidial:ra_call_control", map[bool]string{true: "ok", false: "error"}[err == nil])
+    }
+    return err
 }
 
 func (api *APIClient) UpdateLeadStatusBySession(sessionID, status string) error {
@@ -96,7 +111,11 @@ func (api *APIClient) UpdateLeadStatusBySession(sessionID, status string) error 
     if err != nil {
         return err
     }
-    return api.UpdateLeadStatus(leadID, status)
+    err = api.UpdateLeadStatus(leadID, status)
+    if api.logger != nil {
+        api.logger.LogAPICall(sessionID, "vicidial:update_lead", map[bool]string{true: "ok", false: "error"}[err == nil])
+    }
+    return err
 }
 
 func (api *APIClient) UpdateLogEntryBySession(sessionID, status string) error {
@@ -110,7 +129,11 @@ func (api *APIClient) UpdateLogEntryBySession(sessionID, status string) error {
     if err != nil {
         return err
     }
-    return api.UpdateLogEntry(campaignID, callID, status)
+    err = api.UpdateLogEntry(campaignID, callID, status)
+    if api.logger != nil {
+        api.logger.LogAPICall(sessionID, "vicidial:update_log_entry", map[bool]string{true: "ok", false: "error"}[err == nil])
+    }
+    return err
 }
 
 // SetVicidialConfig updates client configuration

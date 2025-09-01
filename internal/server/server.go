@@ -240,6 +240,10 @@ func (s *Server) handleConnection(conn net.Conn) {
                 s.config.TransferPhone,
             )
             apiClient.SetRedis(s.redis, s.config.RedisPrefix)
+            if session.flowEngine != nil { // propagate logger for session-scoped api_call logs
+                // engine.SetAPIClient will also propagate, but set here in case of timing/order
+                apiClient.SetLogger(session.flowEngine.GetSessionLogger())
+            }
             session.flowEngine.SetAPIClient(apiClient)
         }
     }
@@ -295,6 +299,10 @@ func (s *Server) handleConnection(conn net.Conn) {
                 )
                 // Attach Redis for var resolution
                 apiClient.SetRedis(s.redis, s.config.RedisPrefix)
+                // Attach session logger if available to log Vicidial calls during hangup
+                if session.flowEngine != nil {
+                    apiClient.SetLogger(session.flowEngine.GetSessionLogger())
+                }
                 // Determine final status: prefer flow-derived reason; skip DC if transferred
                 status := "DC"
                 if session.flowEngine.WasTransferred() {

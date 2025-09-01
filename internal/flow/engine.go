@@ -109,12 +109,21 @@ func NewFlowEngine(session Session, configPath string) (*FlowEngine, error) {
 // SetSessionLogger provides a logger to persist structured session events
 func (fe *FlowEngine) SetSessionLogger(logger *SessionLogger) {
     fe.logger = logger
+    if fe.apiClient != nil {
+        fe.apiClient.SetLogger(logger)
+    }
 }
 
 // SetAPIClient lets server provide a configured Vicidial client
 func (fe *FlowEngine) SetAPIClient(client *APIClient) {
     fe.apiClient = client
+    if fe.logger != nil {
+        fe.apiClient.SetLogger(fe.logger)
+    }
 }
+
+// GetSessionLogger returns the session logger if configured
+func (fe *FlowEngine) GetSessionLogger() *SessionLogger { return fe.logger }
 
 // loadFlowConfig loads flow configuration from JSON file
 func loadFlowConfig(configPath string) (*FlowConfig, error) {

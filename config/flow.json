@@ -153,7 +153,7 @@
       "id": "bye",
       "type": "hangup",
       "content": "Goodbye!",
-      "audio_file": "bye.wav",
+      "audio_file": "",
       "actions": [
         {
           "type": "api_call",
