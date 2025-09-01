@@ -1,14 +1,14 @@
 package flow
 
 import (
-	"context"
-	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"path"
-	"strings"
-	"time"
+    "context"
+    "fmt"
+    "io"
+    "net/http"
+    "net/url"
+    "path"
+    "strings"
+    "time"
 
 	redis "github.com/redis/go-redis/v9"
 )
@@ -94,17 +94,46 @@ func (api *APIClient) UpdateRaCallControlBySession(sessionID, stage, status, pho
     if err != nil {
         return err
     }
-    err = api.UpdateRaCallControl(agentUser, stage, status, display, phone)
-    if api.logger != nil {
-        api.logger.LogAPICallDetails(sessionID, "vicidial:ra_call_control", map[bool]string{true: "ok", false: "error"}[err == nil], map[string]string{
-            "agent_user": agentUser,
-            "stage":      stage,
-            "vd_status":  status,
-            "value":      display,
-            "phone":      phone,
-        })
+    // Build request and log exact request/response
+    fullURL := api.serverURL + "/agc/api.php"
+    params := map[string]string{
+        "source":     api.sourceRA,
+        "user":       api.apiUser,
+        "pass":       api.apiPass,
+        "agent_user": agentUser,
+        "function":   "ra_call_control",
+        "stage":      stage,
+        "status":     status,
+        "value":      display,
     }
-    return err
+    if phone != "" {
+        params["phone_number"] = phone
+    }
+
+    start := time.Now()
+    code, body, reqErr := api.makeRequest(fullURL, params)
+    dur := time.Since(start).Milliseconds()
+    if api.logger != nil {
+        details := map[string]string{
+            "lead_id":     leadID,
+            "agent_user":  agentUser,
+            "stage":       stage,
+            "vd_status":   status,
+            "value":       display,
+            "phone":       phone,
+            "http_status": fmt.Sprintf("%d", code),
+            "duration_ms": fmt.Sprintf("%d", dur),
+        }
+        resp := strings.TrimSpace(body)
+        if len(resp) > 200 {
+            resp = resp[:200] + "…"
+        }
+        if resp != "" {
+            details["response"] = resp
+        }
+        api.logger.LogAPICallDetails(sessionID, "vicidial:ra_call_control", map[bool]string{true: "ok", false: "error"}[reqErr == nil], details)
+    }
+    return reqErr
 }
 
 func (api *APIClient) UpdateLeadStatusBySession(sessionID, status string) error {
@@ -114,14 +143,35 @@ func (api *APIClient) UpdateLeadStatusBySession(sessionID, status string) error 
     if err != nil {
         return err
     }
-    err = api.UpdateLeadStatus(leadID, status)
-    if api.logger != nil {
-        api.logger.LogAPICallDetails(sessionID, "vicidial:update_lead", map[bool]string{true: "ok", false: "error"}[err == nil], map[string]string{
-            "lead_id":   leadID,
-            "vd_status": status,
-        })
+    fullURL := api.serverURL + "/" + path.Join(api.adminDir, "non_agent_api.php")
+    params := map[string]string{
+        "source":   api.sourceAdmin,
+        "user":     api.apiUser,
+        "pass":     api.apiPass,
+        "function": "update_lead",
+        "lead_id":  leadID,
+        "status":   status,
     }
-    return err
+    start := time.Now()
+    code, body, reqErr := api.makeRequest(fullURL, params)
+    dur := time.Since(start).Milliseconds()
+    if api.logger != nil {
+        details := map[string]string{
+            "lead_id":     leadID,
+            "vd_status":   status,
+            "http_status": fmt.Sprintf("%d", code),
+            "duration_ms": fmt.Sprintf("%d", dur),
+        }
+        resp := strings.TrimSpace(body)
+        if len(resp) > 200 {
+            resp = resp[:200] + "…"
+        }
+        if resp != "" {
+            details["response"] = resp
+        }
+        api.logger.LogAPICallDetails(sessionID, "vicidial:update_lead", map[bool]string{true: "ok", false: "error"}[reqErr == nil], details)
+    }
+    return reqErr
 }
 
 func (api *APIClient) UpdateLogEntryBySession(sessionID, status string) error {
@@ -135,15 +185,37 @@ func (api *APIClient) UpdateLogEntryBySession(sessionID, status string) error {
     if err != nil {
         return err
     }
-    err = api.UpdateLogEntry(campaignID, callID, status)
+    fullURL := api.serverURL + "/" + path.Join(api.adminDir, "non_agent_api.php")
+    params := map[string]string{
+        "source":   api.sourceRA,
+        "user":     api.apiUser,
+        "pass":     api.apiPass,
+        "function": "update_log_entry",
+        "group":    campaignID,
+        "call_id":  callID,
+        "status":   status,
+    }
+    start := time.Now()
+    code, body, reqErr := api.makeRequest(fullURL, params)
+    dur := time.Since(start).Milliseconds()
     if api.logger != nil {
-        api.logger.LogAPICallDetails(sessionID, "vicidial:update_log_entry", map[bool]string{true: "ok", false: "error"}[err == nil], map[string]string{
+        details := map[string]string{
             "campaign_id": campaignID,
             "call_id":     callID,
             "vd_status":   status,
-        })
+            "http_status": fmt.Sprintf("%d", code),
+            "duration_ms": fmt.Sprintf("%d", dur),
+        }
+        resp := strings.TrimSpace(body)
+        if len(resp) > 200 {
+            resp = resp[:200] + "…"
+        }
+        if resp != "" {
+            details["response"] = resp
+        }
+        api.logger.LogAPICallDetails(sessionID, "vicidial:update_log_entry", map[bool]string{true: "ok", false: "error"}[reqErr == nil], details)
     }
-    return err
+    return reqErr
 }
 
 // SetVicidialConfig updates client configuration
@@ -158,11 +230,11 @@ func (api *APIClient) SetVicidialConfig(serverURL, adminDir, apiUser, apiPass, s
     api.transferPhone = transferPhone
 }
 
-// makeRequest performs a GET request to a full URL with params
-func (api *APIClient) makeRequest(fullURL string, params map[string]string) error {
+// makeRequest performs a GET request to a full URL with params and returns HTTP status and body
+func (api *APIClient) makeRequest(fullURL string, params map[string]string) (int, string, error) {
     u, err := url.Parse(fullURL)
     if err != nil {
-        return fmt.Errorf("failed to parse URL: %w", err)
+        return 0, "", fmt.Errorf("failed to parse URL: %w", err)
     }
     q := u.Query()
     for k, v := range params {
@@ -170,15 +242,22 @@ func (api *APIClient) makeRequest(fullURL string, params map[string]string) erro
     }
     u.RawQuery = q.Encode()
 
+    start := time.Now()
     resp, err := api.httpClient.Get(u.String())
     if err != nil {
-        return fmt.Errorf("request failed: %w", err)
+        return 0, "", fmt.Errorf("request failed: %w", err)
     }
     defer resp.Body.Close()
-    if resp.StatusCode != http.StatusOK {
-        return fmt.Errorf("unexpected status: %d", resp.StatusCode)
+    body, rerr := io.ReadAll(resp.Body)
+    if rerr != nil {
+        // prefer original HTTP status for logging even if read failed
+        return resp.StatusCode, "", fmt.Errorf("read body: %w", rerr)
     }
-    return nil
+    _ = start // reserved for future latency metrics if needed here
+    if resp.StatusCode != http.StatusOK {
+        return resp.StatusCode, string(body), fmt.Errorf("unexpected status: %d", resp.StatusCode)
+    }
+    return resp.StatusCode, string(body), nil
 }
 
 // UpdateRaCallControl -> {SERVER_URL}/agc/api.php
@@ -197,7 +276,8 @@ func (api *APIClient) UpdateRaCallControl(agentUser, stage, status, display stri
     if phoneNumber != "" {
         params["phone_number"] = phoneNumber
     }
-    return api.makeRequest(fullURL, params)
+    _, _, err := api.makeRequest(fullURL, params)
+    return err
 }
 
 // UpdateLeadStatus -> {SERVER_URL}/{ADMIN_DIR}/non_agent_api.php
@@ -211,7 +291,8 @@ func (api *APIClient) UpdateLeadStatus(leadID, status string) error {
         "lead_id":  leadID,
         "status":   status,
     }
-    return api.makeRequest(fullURL, params)
+    _, _, err := api.makeRequest(fullURL, params)
+    return err
 }
 
 // UpdateLogEntry -> {SERVER_URL}/{ADMIN_DIR}/non_agent_api.php
@@ -226,7 +307,8 @@ func (api *APIClient) UpdateLogEntry(campaignID, callID, status string) error {
         "call_id":  callID,
         "status":   status,
     }
-    return api.makeRequest(fullURL, params)
+    _, _, err := api.makeRequest(fullURL, params)
+    return err
 }
 
 // GetAgentUserByLead queries Vicidial for the agent (user) handling a lead

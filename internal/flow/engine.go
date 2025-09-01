@@ -21,6 +21,10 @@ type FlowEngine struct {
     logger      *SessionLogger
     lastReason  string // tracks last flow reason for hangup reporting
     transferred bool   // track if transfer occurred to avoid DC fallback
+
+    // Optional context for improved start logging
+    startPhone  string
+    startLeadID string
 }
 
 // FlowNode represents a single step in the flow
@@ -122,6 +126,12 @@ func (fe *FlowEngine) SetAPIClient(client *APIClient) {
     }
 }
 
+// SetStartContext provides phone and lead id to be logged on flow_start
+func (fe *FlowEngine) SetStartContext(phone, leadID string) {
+    fe.startPhone = phone
+    fe.startLeadID = leadID
+}
+
 // GetSessionLogger returns the session logger if configured
 func (fe *FlowEngine) GetSessionLogger() *SessionLogger { return fe.logger }
 
@@ -155,7 +165,20 @@ func (fe *FlowEngine) Start() error {
 
     // Structured log
     if fe.logger != nil {
-        fe.logger.LogFlowStart(fe.session.GetID(), fe.config.Metadata.Name, fe.config.Metadata.Version, time.Now())
+        name := fe.config.Metadata.Name
+        ver := fe.config.Metadata.Version
+        if fe.startPhone != "" || fe.startLeadID != "" {
+            // prefer phone | lead format for clarity
+            if fe.startPhone == "" {
+                name = fe.startLeadID
+            } else if fe.startLeadID == "" {
+                name = fe.startPhone
+            } else {
+                name = fmt.Sprintf("%s | %s", fe.startPhone, fe.startLeadID)
+            }
+            ver = ""
+        }
+        fe.logger.LogFlowStart(fe.session.GetID(), name, ver, time.Now())
     }
 
 	// Execute start node
@@ -532,17 +555,9 @@ func (fe *FlowEngine) executeActions(actions []Action) error {
     for _, action := range actions {
         switch action.Type {
         case "api_call":
-            // Execute API call based on endpoint
+            // Execute API call based on endpoint; detailed logging inside
             if err := fe.executeAPICall(action); err != nil {
                 log.Printf("Warning: API call failed: %v", err)
-                if fe.logger != nil {
-                    fe.logger.LogAPICall(fe.session.GetID(), action.Endpoint, "error")
-                }
-            } else {
-                log.Printf("API call successful: %s %s", action.Method, action.Endpoint)
-                if fe.logger != nil {
-                    fe.logger.LogAPICall(fe.session.GetID(), action.Endpoint, "ok")
-                }
             }
         case "log":
             log.Printf("Log action: %s", action.Message)
@@ -568,22 +583,48 @@ func (fe *FlowEngine) executeAPICall(action Action) error {
     case "/add_to_dnc":
         // Do not call Vicidial immediately; mark intent and defer to hangup
         fe.lastReason = "DNC"
+        if fe.logger != nil {
+            fe.logger.LogAPICallDetails(fe.session.GetID(), "/add_to_dnc", "ok", map[string]string{"vd_status": "DNC"})
+        }
         return nil
     case "/mark_not_interested":
         fe.lastReason = "NI"
+        if fe.logger != nil {
+            fe.logger.LogAPICallDetails(fe.session.GetID(), "/mark_not_interested", "ok", map[string]string{"vd_status": "NI"})
+        }
         return nil
     case "/schedule_callback":
         fe.lastReason = "CALLBK"
+        if fe.logger != nil {
+            fe.logger.LogAPICallDetails(fe.session.GetID(), "/schedule_callback", "ok", map[string]string{"vd_status": "CALLBK"})
+        }
         return nil
     case "/transfer_call":
-        return fe.apiClient.UpdateRaCallControlBySession(fe.session.GetID(), "EXTENSIONTRANSFER", fe.apiClient.TransferStatus(), fe.apiClient.TransferPhone())
+        st := fe.apiClient.TransferStatus()
+        phone := fe.apiClient.TransferPhone()
+        err := fe.apiClient.UpdateRaCallControlBySession(fe.session.GetID(), "EXTENSIONTRANSFER", st, phone)
+        if fe.logger != nil {
+            fe.logger.LogAPICallDetails(fe.session.GetID(), "/transfer_call", map[bool]string{true: "ok", false: "error"}[err == nil], map[string]string{
+                "stage": "EXTENSIONTRANSFER", "vd_status": st, "phone": phone,
+            })
+        }
+        return err
     case "/end_call":
         status := fe.lastReason
         if status == "" {
             status = "DC"
         }
-        return fe.apiClient.UpdateRaCallControlBySession(fe.session.GetID(), "HANGUP", status, "")
+        err := fe.apiClient.UpdateRaCallControlBySession(fe.session.GetID(), "HANGUP", status, "")
+        if fe.logger != nil {
+            fe.logger.LogAPICallDetails(fe.session.GetID(), "/end_call", map[bool]string{true: "ok", false: "error"}[err == nil], map[string]string{
+                "stage": "HANGUP", "vd_status": status,
+            })
+        }
+        return err
     default:
+        if fe.logger != nil {
+            fe.logger.LogAPICallDetails(fe.session.GetID(), action.Endpoint, "error", map[string]string{"error": "unknown endpoint"})
+        }
         return fmt.Errorf("unknown action endpoint: %s", action.Endpoint)
     }
 }

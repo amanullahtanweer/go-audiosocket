@@ -228,6 +228,22 @@ func (s *Server) handleConnection(conn net.Conn) {
                     session.flowEngine.SetSessionLogger(logger)
                 }
             }
+            // Provide start context (phone | lead_id) from Redis if available
+            if session.flowEngine != nil {
+                // Try multiple possible phone keys; pick first non-empty
+                phone := ""
+                for _, k := range []string{"phone_number", "phone", "callerid", "cid", "ani"} {
+                    if v, ok := session.GetVar(k); ok && v != "" {
+                        phone = v
+                        break
+                    }
+                }
+                leadID := ""
+                if v, ok := session.GetVar("lead_id"); ok {
+                    leadID = v
+                }
+                session.flowEngine.SetStartContext(phone, leadID)
+            }
             // Configure Vicidial API client
             apiClient := flow.NewVicidialClient(
                 s.config.VicidialServerURL,
