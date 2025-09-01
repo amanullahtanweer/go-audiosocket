@@ -1,9 +1,0 @@
-Session ID: 7e6b3c73-18d5-436b-92a3-85e0e3460f31
-Provider: assemblyai
-Start Time: 2025-08-28 08:51:40
-Duration: 24.768801209s
-Sample Rate: 8000Hz
-
----TRANSCRIPT---
-
-Hello. Doing good. Okay. Go on. Come on. Okay. Go on. Come on. I'm listening. Yeah.

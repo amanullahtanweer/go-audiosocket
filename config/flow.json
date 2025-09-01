@@ -87,7 +87,7 @@
       "id": "not_interested",
       "type": "interrupt",
       "content": "Caller is not interested in Medicare benefits",
-      "audio_file": "bye.wav",
+      "audio_file": "",
       "transitions": {
         "default": "end_call"
       },

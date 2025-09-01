@@ -1,9 +1,0 @@
-Session ID: 850fa1dd-9f97-499a-bbd1-3f916f7820e6
-Provider: assemblyai
-Start Time: 2025-08-28 23:11:48
-Duration: 17.228058541s
-Sample Rate: 8000Hz
-
----TRANSCRIPT---
-
-Hello. Hello. I am jessica. No, I don't have it.

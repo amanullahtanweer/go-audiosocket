@@ -1,9 +1,0 @@
-Session ID: cb18fe18-877b-444a-b128-3bb116397863
-Provider: assemblyai
-Start Time: 2025-08-28 08:48:14
-Duration: 20.439001708s
-Sample Rate: 8000Hz
-
----TRANSCRIPT---
-
-My name. Come on. Go on. Yeah. Come on, tell me more about it. Yes.
