@@ -109,6 +109,21 @@ func (sl *SessionLogger) LogAPICall(sessionID string, endpoint, status string) {
     sl.write(logRecord{Timestamp: time.Now().Format(time.RFC3339Nano), Event: "api_call", SessionID: sessionID, Details: map[string]string{"endpoint": endpoint, "status": status}})
 }
 
+// LogAPICallDetails logs an api_call with additional key/value details.
+// The provided details are merged with endpoint/status and can include
+// request params and a compact response summary for easier debugging.
+func (sl *SessionLogger) LogAPICallDetails(sessionID, endpoint, status string, details map[string]string) {
+    d := map[string]string{"endpoint": endpoint, "status": status}
+    for k, v := range details {
+        // avoid overwriting endpoint/status unless explicitly intended
+        if k == "endpoint" || k == "status" {
+            continue
+        }
+        d[k] = v
+    }
+    sl.write(logRecord{Timestamp: time.Now().Format(time.RFC3339Nano), Event: "api_call", SessionID: sessionID, Details: d})
+}
+
 func (sl *SessionLogger) LogHangup(sessionID string) {
     sl.write(logRecord{Timestamp: time.Now().Format(time.RFC3339Nano), Event: "hangup", SessionID: sessionID})
 }
@@ -116,4 +131,3 @@ func (sl *SessionLogger) LogHangup(sessionID string) {
 func (sl *SessionLogger) LogTransfer(sessionID string, destination string) {
     sl.write(logRecord{Timestamp: time.Now().Format(time.RFC3339Nano), Event: "transfer", SessionID: sessionID, Details: map[string]string{"destination": destination}})
 }
-

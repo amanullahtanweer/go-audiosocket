@@ -86,9 +86,6 @@ func (api *APIClient) UpdateRaCallControlBySession(sessionID, stage, status, pho
         return err
     }
     agentUser, err := api.GetAgentUserByLead(leadID)
-    if api.logger != nil {
-        api.logger.LogAPICall(sessionID, "vicidial:lead_field_info", map[bool]string{true: "ok", false: "error"}[err == nil])
-    }
     if err != nil {
         // If unavailable, proceed with empty agent user
         agentUser = ""
@@ -99,7 +96,13 @@ func (api *APIClient) UpdateRaCallControlBySession(sessionID, stage, status, pho
     }
     err = api.UpdateRaCallControl(agentUser, stage, status, display, phone)
     if api.logger != nil {
-        api.logger.LogAPICall(sessionID, "vicidial:ra_call_control", map[bool]string{true: "ok", false: "error"}[err == nil])
+        api.logger.LogAPICallDetails(sessionID, "vicidial:ra_call_control", map[bool]string{true: "ok", false: "error"}[err == nil], map[string]string{
+            "agent_user": agentUser,
+            "stage":      stage,
+            "vd_status":  status,
+            "value":      display,
+            "phone":      phone,
+        })
     }
     return err
 }
@@ -113,7 +116,10 @@ func (api *APIClient) UpdateLeadStatusBySession(sessionID, status string) error 
     }
     err = api.UpdateLeadStatus(leadID, status)
     if api.logger != nil {
-        api.logger.LogAPICall(sessionID, "vicidial:update_lead", map[bool]string{true: "ok", false: "error"}[err == nil])
+        api.logger.LogAPICallDetails(sessionID, "vicidial:update_lead", map[bool]string{true: "ok", false: "error"}[err == nil], map[string]string{
+            "lead_id":   leadID,
+            "vd_status": status,
+        })
     }
     return err
 }
@@ -131,7 +137,11 @@ func (api *APIClient) UpdateLogEntryBySession(sessionID, status string) error {
     }
     err = api.UpdateLogEntry(campaignID, callID, status)
     if api.logger != nil {
-        api.logger.LogAPICall(sessionID, "vicidial:update_log_entry", map[bool]string{true: "ok", false: "error"}[err == nil])
+        api.logger.LogAPICallDetails(sessionID, "vicidial:update_log_entry", map[bool]string{true: "ok", false: "error"}[err == nil], map[string]string{
+            "campaign_id": campaignID,
+            "call_id":     callID,
+            "vd_status":   status,
+        })
     }
     return err
 }
